@@ -16,6 +16,11 @@ class VcTrackerCog(commands.Cog):
     - 3+ real users => no tracking for that channel (prevents "every pair" farming)
     - Uses disconnect buffer: briefly leaving doesn't break duo if they rejoin quickly
     - Bootstraps state on startup by scanning voice channels
+
+    NEW:
+    - Temporary nickname suffix " 🔥" while duo is qualified (met min overlap today OR has active streak)
+    - Restores original nick immediately when duo breaks
+    - Memory-only (not saved to DB)
     """
 
     def __init__(self, bot: commands.Bot, settings, repos):
@@ -24,10 +29,93 @@ class VcTrackerCog(commands.Cog):
         self.repos = repos
         self.state = VcRuntimeState()
         self._bootstrapped = False
+
+        # fire-nick runtime memory
+        self._fire_active: dict[int, set[int]] = {}  # guild_id -> set(user_id) currently tagged
+        self._fire_original_nick: dict[int, dict[int, str | None]] = {}  # guild_id -> {user_id: original nick}
+
         self.tick.start()
 
     def cog_unload(self):
         self.tick.cancel()
+
+    # ---------------- fire nickname helpers ----------------
+
+    def _fire_enabled(self) -> bool:
+        return bool(getattr(self.settings, "nickname_fire_enabled", True))
+
+    def _fire_suffix(self) -> str:
+        return str(getattr(self.settings, "nickname_fire_suffix", " 🔥"))
+
+    def _strip_fire_suffix(self, s: str) -> str:
+        suf = self._fire_suffix()
+        return s[:-len(suf)] if s.endswith(suf) else s
+
+    async def _apply_fire(self, guild: discord.Guild, user_id: int) -> None:
+        if not self._fire_enabled():
+            return
+
+        member = guild.get_member(user_id)
+        if member is None or member.bot:
+            return
+
+        suf = self._fire_suffix()
+
+        # Save original nickname once (can be None)
+        self._fire_original_nick.setdefault(guild.id, {}).setdefault(user_id, member.nick)
+
+        base = member.nick if member.nick else member.name
+        base = self._strip_fire_suffix(base)
+        new_nick = base + suf
+
+        # Avoid spamming edits
+        if member.nick == new_nick:
+            self._fire_active.setdefault(guild.id, set()).add(user_id)
+            return
+
+        try:
+            await member.edit(nick=new_nick, reason="Ignio: duo qualified (fire)")
+            self._fire_active.setdefault(guild.id, set()).add(user_id)
+        except (discord.Forbidden, discord.HTTPException):
+            # Missing Manage Nicknames or role hierarchy issues
+            return
+
+    async def _remove_fire(self, guild: discord.Guild, user_id: int) -> None:
+        if not self._fire_enabled():
+            return
+
+        member = guild.get_member(user_id)
+        if member is None or member.bot:
+            return
+
+        orig = self._fire_original_nick.get(guild.id, {}).get(user_id, None)
+
+        try:
+            await member.edit(nick=orig, reason="Ignio: duo ended (remove fire)")
+        except (discord.Forbidden, discord.HTTPException):
+            return
+        finally:
+            self._fire_active.get(guild.id, set()).discard(user_id)
+            if guild.id in self._fire_original_nick:
+                self._fire_original_nick[guild.id].pop(user_id, None)
+
+    async def _sync_fire_for_guild(self, guild_id: int, desired_users: set[int]) -> None:
+        if not self._fire_enabled():
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        if guild is None:
+            return
+
+        active = self._fire_active.setdefault(guild_id, set())
+
+        # Add to desired
+        for uid in (desired_users - active):
+            await self._apply_fire(guild, uid)
+
+        # Remove from no-longer-desired
+        for uid in list(active - desired_users):
+            await self._remove_fire(guild, uid)
 
     # ---------------- bootstrap ----------------
 
@@ -62,7 +150,6 @@ class VcTrackerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # On some setups, before_loop runs but cache isn't fully ready.
         await self.bootstrap_voice_state()
 
     # ---------------- voice state updates ----------------
@@ -80,16 +167,15 @@ class VcTrackerCog(commands.Cog):
         guild_id = member.guild.id
         now_ts = now_utc_ts()
 
-        # 1) Mark leaving (for disconnect buffer) ONLY if they were in a channel and now aren't
+        # Mark leaving (disconnect buffer) if they left a channel completely
         if before.channel is not None and after.channel is None:
             self.state.mark_left(guild_id, member.id, before.channel.id, now_ts)
 
-        # 2) If they are connected anywhere now, clear "recently_left"
-        #    (covers reconnects + channel switching)
+        # If connected anywhere now, clear recently_left (reconnect / channel switch)
         if after.channel is not None:
             self.state.clear_left(guild_id, member.id)
 
-        # 3) Refresh membership sets for affected channels (before + after)
+        # Refresh membership sets for affected channels
         for ch in (before.channel, after.channel):
             if ch is None:
                 continue
@@ -112,7 +198,6 @@ class VcTrackerCog(commands.Cog):
         """
         effective = set(base_members)
 
-        # Apply disconnect buffer: include people who recently left THIS channel in THIS guild
         for (g_id, u_id), (left_ch, left_ts) in list(self.state.recently_left.items()):
             if g_id != guild_id or left_ch != channel_id:
                 continue
@@ -121,7 +206,6 @@ class VcTrackerCog(commands.Cog):
             if age <= self.settings.disconnect_buffer_seconds:
                 effective.add(u_id)
             else:
-                # buffer expired
                 self.state.clear_left(guild_id, u_id)
 
         return effective
@@ -130,48 +214,58 @@ class VcTrackerCog(commands.Cog):
 
     @tasks.loop(seconds=15)
     async def tick(self):
-        # If bot not ready yet, do nothing (before_loop also handles this)
         if not self.bot.is_ready():
             return
 
         now_ts = now_utc_ts()
         day_key = day_key_from_utc_ts(now_ts, self.settings.default_tz, self.settings.grace_hour_local)
 
-        # Iterate over tracked guild/channel membership
+        # Who should have 🔥 right now (per guild)
+        desired_fire: dict[int, set[int]] = {}
+
         for guild_id, channels in list(self.state.channel_members.items()):
             for channel_id, members in list(channels.items()):
 
-                # ignore AFK channels if configured
                 if self.settings.ignore_afk_channels and channel_id in self.settings.afk_channel_ids:
                     continue
 
-                # base "humans currently in channel" set (already non-bot in state)
                 base = set(members)
                 if not base:
                     continue
 
-                # apply disconnect buffer
                 effective = self._compute_effective_members(guild_id, channel_id, now_ts, base)
 
-                # ✅ DUO-ONLY RULE:
-                # must be exactly 2 real users (after buffer) to count
-                # - 1 user => ignore
-                # - 3+ users => ignore (prevents pairwise farming)
+                # ✅ DUO-ONLY: exactly 2 humans
                 if len(effective) != 2:
                     continue
 
                 a, b = sorted(effective)
-                await self._apply_overlap_tick(guild_id, a, b, day_key, now_ts)
+
+                # Track overlap + streak updates
+                duo_id, today_total, current_streak = await self._apply_overlap_tick(
+                    guild_id, a, b, day_key, now_ts
+                )
+
+                # Fire tag condition:
+                # - met today's required overlap OR already has active streak
+                # Use effective config (DB overrides) so changes apply immediately
+                cfg = await self.repos.get_effective_config(guild_id, self.settings)
+                min_required = int(cfg.get("min_overlap_seconds", self.settings.min_overlap_seconds))
+
+                if (today_total >= min_required) or (current_streak > 0):
+                    desired_fire.setdefault(guild_id, set()).update({a, b})
+
+        # Sync nicknames: add 🔥 to desired, remove from everyone else
+        for gid in list(self.state.channel_members.keys()):
+            await self._sync_fire_for_guild(gid, desired_fire.get(gid, set()))
 
     async def _apply_overlap_tick(self, guild_id: int, user_a: int, user_b: int, day_key: int, now_ts: int):
         """
         Adds overlap seconds for this duo and updates streak if day completed.
-        NOTE: This will auto-create a duo row if it doesn't exist yet.
-        If you want "only after command", tell me and I’ll swap to get_duo_id + gate.
+        Returns: (duo_id, today_total_seconds, current_streak_after)
         """
         duo_id = await self.repos.get_or_create_duo(guild_id, user_a, user_b, now_ts)
 
-        # Add seconds for today (repo should clamp/cap if you support daily caps)
         today_total = await self.repos.add_duo_daily_seconds(
             guild_id=guild_id,
             duo_id=duo_id,
@@ -200,7 +294,10 @@ class VcTrackerCog(commands.Cog):
                 last_completed_day_key=day_key,
                 now_ts=now_ts,
             )
+            current = new_current
             print(f"[Ignio] ✅ duo complete: guild={guild_id} users={user_a}+{user_b} streak={new_current}")
+
+        return duo_id, today_total, current
 
     @tick.before_loop
     async def before_tick(self):

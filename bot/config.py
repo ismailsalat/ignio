@@ -61,6 +61,10 @@ class Settings:
     dm_streak_end_ice_enabled: bool = True
     restore_window_hours: int = 24
 
+    # ---------------- Nickname Fire System (NEW) ----------------
+    nickname_fire_enabled: bool = True
+    nickname_fire_suffix: str = " 🔥"
+
 
 def load_settings() -> Settings:
     # ---------- DEBUG (safe: does NOT print token value) ----------
@@ -94,7 +98,6 @@ def load_settings() -> Settings:
     )
 
     if not token:
-        # last debug: show whether a .env file exists in container (it shouldn't)
         try:
             exists = os.path.exists(".env")
         except Exception:
