@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+# Only load .env locally if python-dotenv is installed and a .env file exists.
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
 
 EMOJIS = {
     "fire": "<:fire:1473077788658372742>",
@@ -16,6 +20,7 @@ EMOJIS = {
 def e(key: str) -> str:
     return EMOJIS.get(key, "")
 
+
 @dataclass(frozen=True)
 class Settings:
     token: str
@@ -25,44 +30,52 @@ class Settings:
     grace_hour_local: int = 3  # day closes at 3:00 AM local time
 
     # ---------------- VC overlap rules ----------------
-    # Minimum overlap required to "complete" a day (streak preserved)
-    min_overlap_seconds: int = 3 * 60          # default 3 minutes
-    tick_seconds: int = 15                      # seconds added per tick
-    disconnect_buffer_seconds: int = 60         # allow brief disconnect without breaking overlap
+    min_overlap_seconds: int = 3 * 60
+    tick_seconds: int = 15
+    disconnect_buffer_seconds: int = 60
 
-    # Anti-farm: cap overlap counted per duo per day (0 = unlimited)
-    daily_cap_seconds: int = 3 * 60 * 60        # default 3 hours/day per duo
+    daily_cap_seconds: int = 3 * 60 * 60
 
     # ---------------- AFK ignore ----------------
     ignore_afk_channels: bool = True
-    afk_channel_ids: tuple[int, ...] = ()       # add AFK voice channel IDs here
+    afk_channel_ids: tuple[int, ...] = ()
 
     # ---------------- UI ----------------
     progress_bar_width: int = 12
-    heatmap_days: int = 28                      # last N days
-    # 2-color heatmap (met / not met)
+    heatmap_days: int = 28
     heatmap_met_emoji: str = "🟥"
     heatmap_empty_emoji: str = "⬜"
 
     # ---------------- Privacy ----------------
-    # Privacy default is OFF (public). If either member enables privacy,
-    # only duo members (and admins if enabled) can view streak.
     privacy_default_private: bool = False
     privacy_admin_can_view: bool = True
 
     # ---------------- DM reminders ----------------
     dm_reminders_enabled: bool = True
-    dm_remind_before_minutes: int = 30          # remind this many minutes before day closes
-    dm_remind_cooldown_minutes: int = 120       # per-duo cooldown to prevent spam
+    dm_remind_before_minutes: int = 30
+    dm_remind_cooldown_minutes: int = 120
 
-    # DM streak ended messages
     dm_streak_end_enabled: bool = True
-    dm_streak_end_restore_enabled: bool = True  # white_fire message when it ends (restore possible)
-    dm_streak_end_ice_enabled: bool = True      # ice message when restore window is over
-    restore_window_hours: int = 24              # "restore possible" window length (message-only for now)
+    dm_streak_end_restore_enabled: bool = True
+    dm_streak_end_ice_enabled: bool = True
+    restore_window_hours: int = 24
+
 
 def load_settings() -> Settings:
-    token = os.getenv("DISCORD_TOKEN", "").strip()
+    # Local dev convenience: read .env if available (does NOT override Railway env vars)
+    if load_dotenv is not None:
+        load_dotenv(override=False)
+
+    token = (
+        os.getenv("DISCORD_TOKEN", "").strip()
+        or os.getenv("TOKEN", "").strip()
+        or os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    )
+
     if not token:
-        raise RuntimeError("Missing DISCORD_TOKEN in .env (DISCORD_TOKEN=...)")
+        raise RuntimeError(
+            "Missing DISCORD_TOKEN. Set DISCORD_TOKEN in Railway → Variables, "
+            "or add DISCORD_TOKEN=... to a local .env file."
+        )
+
     return Settings(token=token)
