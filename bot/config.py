@@ -1,10 +1,9 @@
-# bot/config.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 import os
 
-# Only load .env locally if python-dotenv is installed and a .env file exists.
+# Optional: loads .env locally if installed, but will NOT override Railway env vars
 try:
     from dotenv import load_dotenv
 except Exception:
@@ -30,19 +29,20 @@ class Settings:
     grace_hour_local: int = 3  # day closes at 3:00 AM local time
 
     # ---------------- VC overlap rules ----------------
-    min_overlap_seconds: int = 3 * 60
-    tick_seconds: int = 15
-    disconnect_buffer_seconds: int = 60
+    min_overlap_seconds: int = 3 * 60          # default 3 minutes
+    tick_seconds: int = 15                      # seconds added per tick
+    disconnect_buffer_seconds: int = 60         # allow brief disconnect without breaking overlap
 
-    daily_cap_seconds: int = 3 * 60 * 60
+    # Anti-farm: cap overlap counted per duo per day (0 = unlimited)
+    daily_cap_seconds: int = 3 * 60 * 60        # default 3 hours/day per duo
 
     # ---------------- AFK ignore ----------------
     ignore_afk_channels: bool = True
-    afk_channel_ids: tuple[int, ...] = ()
+    afk_channel_ids: tuple[int, ...] = ()       # add AFK voice channel IDs here
 
     # ---------------- UI ----------------
     progress_bar_width: int = 12
-    heatmap_days: int = 28
+    heatmap_days: int = 28                      # last N days
     heatmap_met_emoji: str = "🟥"
     heatmap_empty_emoji: str = "⬜"
 
@@ -55,6 +55,7 @@ class Settings:
     dm_remind_before_minutes: int = 30
     dm_remind_cooldown_minutes: int = 120
 
+    # DM streak ended messages
     dm_streak_end_enabled: bool = True
     dm_streak_end_restore_enabled: bool = True
     dm_streak_end_ice_enabled: bool = True
@@ -62,10 +63,11 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    # Local dev convenience: read .env if available (does NOT override Railway env vars)
+    # Local dev: load .env if present (does NOT override Railway env vars)
     if load_dotenv is not None:
         load_dotenv(override=False)
 
+    # Railway: set DISCORD_TOKEN in Variables
     token = (
         os.getenv("DISCORD_TOKEN", "").strip()
         or os.getenv("TOKEN", "").strip()
@@ -74,8 +76,8 @@ def load_settings() -> Settings:
 
     if not token:
         raise RuntimeError(
-            "Missing DISCORD_TOKEN. Set DISCORD_TOKEN in Railway → Variables, "
-            "or add DISCORD_TOKEN=... to a local .env file."
+            "Missing DISCORD_TOKEN. Add it in Railway → Variables (Service Variable), "
+            "or create a local .env with DISCORD_TOKEN=..."
         )
 
     return Settings(token=token)
