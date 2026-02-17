@@ -1,5 +1,7 @@
+# bot/main.py
 import asyncio
 import logging
+import os
 import discord
 from discord.ext import commands
 
@@ -9,6 +11,13 @@ from bot.services.repos import Repos
 from bot.loader import load_all
 
 logging.basicConfig(level=logging.INFO)
+
+def get_db_dir() -> str:
+    """
+    Local default: bot/database
+    Railway + volume: /data/database  (set DB_DIR in Railway variables)
+    """
+    return os.getenv("DB_DIR", "bot/database").strip() or "bot/database"
 
 async def run():
     settings = load_settings()
@@ -20,7 +29,12 @@ async def run():
 
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    db_manager = DatabaseManager(folder="database")
+    # ✅ DB folder (local vs Railway)
+    db_dir = get_db_dir()
+    os.makedirs(db_dir, exist_ok=True)
+    print(f"[Ignio] DB_DIR={db_dir}")
+
+    db_manager = DatabaseManager(folder=db_dir)
     repos = Repos(db_manager)
 
     @bot.event
