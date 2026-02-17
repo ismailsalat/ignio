@@ -29,10 +29,6 @@ class StreaksCog(commands.Cog):
         return other
 
     async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool) -> bool:
-        """
-        If either user has privacy_private=1 => private.
-        If no row exists => fallback to default_private.
-        """
         try:
             conn = await self.repos.raw_conn(guild_id)
             fallback = "1" if default_private else "0"
@@ -62,11 +58,9 @@ class StreaksCog(commands.Cog):
         if not is_private:
             return True
 
-        # duo members always allowed
         if ctx.author.id in (user_a.id, user_b.id):
             return True
 
-        # admins optionally allowed
         if admin_can_view and isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator:
             return True
 
@@ -95,12 +89,18 @@ class StreaksCog(commands.Cog):
 
         today_key = day_key_from_utc_ts(now, default_tz, grace_hour)
 
-        duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
+        # ✅ IMPORTANT: view-only. Do NOT create duo just by checking.
+        duo_id = await self.repos.get_duo_id(gid, user_a.id, user_b.id)
+        if duo_id is None:
+            return await ctx.reply(
+                "No streak yet for this duo.\n"
+                "Join a VC **with exactly 2 real users** and it’ll start tracking."
+            )
 
+        # 0 seconds write = safe read of today total (your repo returns current value)
         today_seconds = await self.repos.add_duo_daily_seconds(gid, duo_id, today_key, 0, now)
         current, longest, _ = await self.repos.get_streak_row(gid, duo_id)
 
-        # heatmap = current month only (matches your current formatting)
         today = date.today()
         first_day_key = date(today.year, today.month, 1).toordinal()
         last_day_num = calendar.monthrange(today.year, today.month)[1]
@@ -131,13 +131,6 @@ class StreaksCog(commands.Cog):
     @commands.command(name="streak")
     @commands.guild_only()
     async def streak(self, ctx: commands.Context, user1: discord.Member = None, user2: discord.Member = None):
-        """
-        Usage:
-          !streak                 -> uses your current VC duo (if you're in one)
-          !streak @user1          -> you + user1
-          !streak @user1 @user2   -> user1 + user2
-        """
-        # 0 args => live VC duo for author
         if user1 is None and user2 is None:
             if not isinstance(ctx.author, discord.Member):
                 return await ctx.reply("Usage: `!streak @user1`")
@@ -148,11 +141,9 @@ class StreaksCog(commands.Cog):
 
             a, b = ctx.author, other
 
-        # 1 arg => author + user1
         elif user1 is not None and user2 is None:
             a, b = ctx.author, user1
 
-        # 2 args => user1 + user2
         else:
             a, b = user1, user2
 
@@ -168,11 +159,6 @@ class StreaksCog(commands.Cog):
     @commands.command(name="progress")
     @commands.guild_only()
     async def progress(self, ctx: commands.Context):
-        """
-        Usage:
-          !progress
-        Shows streak/progress with your current VC duo (if you're in one).
-        """
         if not isinstance(ctx.author, discord.Member):
             return await ctx.reply("This command only works for server members.")
 

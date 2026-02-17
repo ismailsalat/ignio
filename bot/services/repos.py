@@ -88,6 +88,28 @@ class Repos:
 
     # ---------- DUO ----------
 
+    async def get_duo_id(self, guild_id: int, user_a: int, user_b: int) -> int | None:
+        """
+        Return duo_id if duo exists; DO NOT create.
+        (DB is per-guild, so no guild_id column needed.)
+        """
+        if user_a == user_b:
+            return None
+
+        conn = await self._conn(guild_id)
+        u1, u2 = self._normalize_pair(int(user_a), int(user_b))
+
+        cur = await conn.execute(
+            """
+            SELECT duo_id
+            FROM duos
+            WHERE user1_id=? AND user2_id=?
+            """,
+            (u1, u2),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else None
+
     async def get_or_create_duo(self, guild_id: int, user_a: int, user_b: int, now_ts: int) -> int:
         if user_a == user_b:
             raise ValueError("Cannot create duo with same user")
@@ -151,9 +173,6 @@ class Repos:
         return int(row[0]) if row else 0
 
     async def get_duo_day_map(self, guild_id: int, duo_id: int, start_day_key: int, end_day_key: int) -> dict[int, int]:
-        """
-        Returns {day_key: overlap_seconds} for range.
-        """
         conn = await self._conn(guild_id)
         cur = await conn.execute(
             """
