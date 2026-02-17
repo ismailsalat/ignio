@@ -63,11 +63,30 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    # Local dev: load .env if present (does NOT override Railway env vars)
+    # ---------- DEBUG (safe: does NOT print token value) ----------
+    def _safe_len(v: str | None) -> int:
+        return len(v.strip()) if isinstance(v, str) else 0
+
+    print("[ENV] Running on Railway? RAILWAY_ENVIRONMENT =", os.getenv("RAILWAY_ENVIRONMENT"))
+    print("[ENV] DISCORD_TOKEN present? ", "DISCORD_TOKEN" in os.environ, "len=", _safe_len(os.getenv("DISCORD_TOKEN")))
+    print("[ENV] TOKEN present?        ", "TOKEN" in os.environ, "len=", _safe_len(os.getenv("TOKEN")))
+    print("[ENV] DISCORD_BOT_TOKEN present?", "DISCORD_BOT_TOKEN" in os.environ, "len=", _safe_len(os.getenv("DISCORD_BOT_TOKEN")))
+
+    # show any env keys related to token/discord/railway (no values)
+    interesting = []
+    for k in os.environ.keys():
+        up = k.upper()
+        if any(x in up for x in ["DISCORD", "TOKEN", "RAILWAY", "NIXPACKS", "PORT"]):
+            interesting.append(k)
+    interesting_sorted = sorted(interesting)
+    print("[ENV] Interesting env keys:", interesting_sorted[:80])
+    if len(interesting_sorted) > 80:
+        print("[ENV] (more keys omitted) total=", len(interesting_sorted))
+
+    # ---------- Normal behavior ----------
     if load_dotenv is not None:
         load_dotenv(override=False)
 
-    # Railway: set DISCORD_TOKEN in Variables
     token = (
         os.getenv("DISCORD_TOKEN", "").strip()
         or os.getenv("TOKEN", "").strip()
@@ -75,6 +94,13 @@ def load_settings() -> Settings:
     )
 
     if not token:
+        # last debug: show whether a .env file exists in container (it shouldn't)
+        try:
+            exists = os.path.exists(".env")
+        except Exception:
+            exists = False
+        print("[ENV] .env exists in container? ", exists)
+
         raise RuntimeError(
             "Missing DISCORD_TOKEN. Add it in Railway → Variables (Service Variable), "
             "or create a local .env with DISCORD_TOKEN=..."
