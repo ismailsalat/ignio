@@ -15,10 +15,6 @@ class StreaksCog(commands.Cog):
         self.repos = repos
 
     def _get_live_duo_from_vc(self, member: discord.Member):
-        """
-        If member is in a VC with exactly 1 other REAL user, return that other user.
-        Otherwise return None.
-        """
         if not member or not member.voice or not member.voice.channel:
             return None
 
@@ -32,44 +28,85 @@ class StreaksCog(commands.Cog):
             return None
         return other
 
-    async def _send_duo_embed(
-        self,
-        ctx: commands.Context,
-        user_a: discord.Member,
-        user_b: discord.Member,
-    ):
-        # must be in a server
+    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool) -> bool:
+        """
+        If either user has privacy_private=1 => private.
+        If no row exists => fallback to default_private.
+        """
+        try:
+            conn = await self.repos.raw_conn(guild_id)
+            fallback = "1" if default_private else "0"
+
+            cur = await conn.execute(
+                """
+                SELECT user_id, value
+                FROM user_settings
+                WHERE key='privacy_private' AND user_id IN (?, ?)
+                """,
+                (int(u1), int(u2)),
+            )
+            rows = await cur.fetchall()
+            vals = {int(uid): str(val) for uid, val in rows}
+
+            v1 = vals.get(int(u1), fallback)
+            v2 = vals.get(int(u2), fallback)
+            return (v1 == "1") or (v2 == "1")
+        except Exception:
+            return False
+
+    async def _can_view_duo(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, cfg: dict) -> bool:
+        default_private = bool(cfg.get("privacy_default_private", False))
+        admin_can_view = bool(cfg.get("privacy_admin_can_view", True))
+
+        is_private = await self._duo_is_private(ctx.guild.id, user_a.id, user_b.id, default_private)
+        if not is_private:
+            return True
+
+        # duo members always allowed
+        if ctx.author.id in (user_a.id, user_b.id):
+            return True
+
+        # admins optionally allowed
+        if admin_can_view and isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator:
+            return True
+
+        return False
+
+    async def _send_duo_embed(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
         if ctx.guild is None:
             return await ctx.reply("This command only works in a server.")
 
         gid = ctx.guild.id
         now = now_utc_ts()
 
-        # effective config (DB overrides)
         cfg = await self.repos.get_effective_config(gid, self.settings)
+
+        # ✅ privacy gate
+        if not await self._can_view_duo(ctx, user_a, user_b, cfg):
+            return await ctx.reply("🔒 This duo streak is private.")
+
         default_tz = str(cfg["default_tz"])
         grace_hour = int(cfg["grace_hour_local"])
         min_required = int(cfg["min_overlap_seconds"])
         bar_width = int(cfg["progress_bar_width"])
 
-        # day_key respects grace window + tz
+        heat_met = str(cfg.get("heatmap_met_emoji", "🟥"))
+        heat_empty = str(cfg.get("heatmap_empty_emoji", "⬜"))
+
         today_key = day_key_from_utc_ts(now, default_tz, grace_hour)
 
-        # create duo + read today
         duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
 
         today_seconds = await self.repos.add_duo_daily_seconds(gid, duo_id, today_key, 0, now)
         current, longest, _ = await self.repos.get_streak_row(gid, duo_id)
 
-        # heatmap = current month only
+        # heatmap = current month only (matches your current formatting)
         today = date.today()
         first_day_key = date(today.year, today.month, 1).toordinal()
         last_day_num = calendar.monthrange(today.year, today.month)[1]
         last_day_key = date(today.year, today.month, last_day_num).toordinal()
 
         day_map = await self.repos.get_duo_day_map(gid, duo_id, first_day_key, last_day_key)
-
-        # connection score (all-time seconds)
         cs = await self.repos.get_connection_score_seconds(gid, duo_id)
 
         embed = duo_status_embed(
@@ -83,50 +120,59 @@ class StreaksCog(commands.Cog):
             status="active",
             connection_score_seconds=cs,
             heatmap_day_to_secs=day_map,
+            heatmap_met_emoji=heat_met,
+            heatmap_empty_emoji=heat_empty,
         )
 
         await ctx.reply(embed=embed)
 
+    # ---------------- commands ----------------
+
     @commands.command(name="streak")
-    async def streak(self, ctx: commands.Context, other: discord.Member = None):
+    @commands.guild_only()
+    async def streak(self, ctx: commands.Context, user1: discord.Member = None, user2: discord.Member = None):
         """
         Usage:
-          !streak @OtherUser
-          !streak   (uses your current VC duo if you're in one)
+          !streak                 -> uses your current VC duo (if you're in one)
+          !streak @user1          -> you + user1
+          !streak @user1 @user2   -> user1 + user2
         """
-        # must be in a server
-        if ctx.guild is None:
-            return await ctx.reply("This command only works in a server.")
-
-        # if no mention, try live VC duo
-        if other is None:
+        # 0 args => live VC duo for author
+        if user1 is None and user2 is None:
             if not isinstance(ctx.author, discord.Member):
-                return await ctx.reply("Usage: `!streak @OtherUser`")
+                return await ctx.reply("Usage: `!streak @user1`")
 
-            live_other = self._get_live_duo_from_vc(ctx.author)
-            if live_other is None:
-                return await ctx.reply("Usage: `!streak @OtherUser` (or join a VC with exactly 1 other real user)")
-            other = live_other
+            other = self._get_live_duo_from_vc(ctx.author)
+            if other is None:
+                return await ctx.reply("Usage: `!streak @user1` (or join a VC with exactly 1 other real user)")
 
-        # edge cases
-        if other.bot:
+            a, b = ctx.author, other
+
+        # 1 arg => author + user1
+        elif user1 is not None and user2 is None:
+            a, b = ctx.author, user1
+
+        # 2 args => user1 + user2
+        else:
+            a, b = user1, user2
+
+        if a is None or b is None:
+            return await ctx.reply("Usage: `!streak @user1` or `!streak @user1 @user2`")
+        if a.bot or b.bot:
             return await ctx.reply("Bots don't count for streaks.")
-        if other.id == ctx.author.id:
-            return await ctx.reply("You can't streak with yourself.")
+        if a.id == b.id:
+            return await ctx.reply("Pick two different users.")
 
-        await self._send_duo_embed(ctx, ctx.author, other)
+        await self._send_duo_embed(ctx, a, b)
 
     @commands.command(name="progress")
+    @commands.guild_only()
     async def progress(self, ctx: commands.Context):
         """
         Usage:
           !progress
         Shows streak/progress with your current VC duo (if you're in one).
         """
-        # must be in a server
-        if ctx.guild is None:
-            return await ctx.reply("This command only works in a server.")
-
         if not isinstance(ctx.author, discord.Member):
             return await ctx.reply("This command only works for server members.")
 

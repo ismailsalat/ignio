@@ -7,6 +7,7 @@ from discord.ext import commands
 from datetime import datetime, timezone
 
 from bot.core.timecore import now_utc_ts, day_key_from_utc_ts
+from bot.config import e as emoji
 
 
 def _parse_seconds(text: str) -> int:
@@ -28,14 +29,30 @@ def _parse_seconds(text: str) -> int:
     return int(s)
 
 
-def _short_err(e: Exception) -> str:
-    return f"{type(e).__name__}: {e}"
+def _short_err(err: Exception) -> str:
+    return f"{type(err).__name__}: {err}"
+
+
+def admin_or_owner():
+    async def predicate(ctx: commands.Context) -> bool:
+        try:
+            if await ctx.bot.is_owner(ctx.author):
+                return True
+        except Exception:
+            pass
+
+        if not ctx.guild:
+            return False
+
+        perms = getattr(ctx.author, "guild_permissions", None)
+        return bool(perms and perms.administrator)
+
+    return commands.check(predicate)
 
 
 class AdminCog(commands.Cog):
     """
-    Admin-only debug commands for Ignio.
-    Works with manual loader injection.
+    Admin-only debug + test commands for Ignio.
     """
 
     def __init__(self, bot: commands.Bot, settings=None, repos=None, vc_state=None, vc_cog=None):
@@ -49,53 +66,55 @@ class AdminCog(commands.Cog):
         if self.vc_cog:
             return self.vc_cog
         return (
-            self.bot.get_cog("VcTrackerCog")  # ✅ your actual class name
+            self.bot.get_cog("VcTrackerCog")
             or self.bot.get_cog("VCTrackerCog")
             or self.bot.get_cog("VCTracker")
             or self.bot.get_cog("VcTracker")
             or self.bot.get_cog("vc_tracker")
         )
 
-    async def _fail(self, ctx: commands.Context, e: Exception):
-        # print full traceback in terminal
-        print("[Ignio][AdminCog] command error:", _short_err(e))
+    async def _fail(self, ctx: commands.Context, err: Exception):
+        print("[Ignio][AdminCog] command error:", _short_err(err))
         traceback.print_exc()
-
-        # respond in discord (short)
         try:
-            await ctx.reply(f"❌ `{_short_err(e)}`")
+            await ctx.reply(f"❌ `{_short_err(err)}`")
         except Exception:
             pass
+
+    def _require_repos(self) -> bool:
+        return bool(self.repos)
 
     # ---------- BASIC ----------
 
     @commands.command(name="ping")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def ping(self, ctx: commands.Context):
         try:
             await ctx.reply(f"🏓 pong ({round(self.bot.latency * 1000)}ms)")
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
     @commands.command(name="loaded")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def loaded(self, ctx: commands.Context):
         try:
             cogs = ", ".join(self.bot.cogs.keys()) or "none"
             cmds = ", ".join(sorted([c.name for c in self.bot.commands]))
             await ctx.reply(f"**Cogs:** {cogs}\n**Commands:** {cmds}")
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
     # ---------- CONFIG (DB-backed) ----------
 
     @commands.command(name="ignio_config")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def ignio_config(self, ctx: commands.Context):
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             cfg = await self.repos.get_effective_config(gid, self.settings)
 
@@ -107,82 +126,88 @@ class AdminCog(commands.Cog):
                 f"- tick_seconds: `{cfg['tick_seconds']}`\n"
                 f"- disconnect_buffer_seconds: `{cfg['disconnect_buffer_seconds']}`\n"
                 f"- progress_bar_width: `{cfg['progress_bar_width']}`\n"
+                f"- privacy_default_private: `{cfg.get('privacy_default_private', False)}`\n"
+                f"- privacy_admin_can_view: `{cfg.get('privacy_admin_can_view', False)}`\n"
+                f"- heatmap_met_emoji: `{cfg.get('heatmap_met_emoji', '🟥')}`\n"
+                f"- heatmap_empty_emoji: `{cfg.get('heatmap_empty_emoji', '⬜')}`\n"
             )
             await ctx.reply(msg)
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
     @commands.command(name="set_min")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def set_min(self, ctx: commands.Context, value: str):
         """
-        !set_min 180
-        !set_min 3m
+        !set_min 120
+        !set_min 2m
         """
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             now = now_utc_ts()
 
             seconds = _parse_seconds(value)
             seconds = max(30, min(seconds, 6 * 60 * 60))
-
             await self.repos.set_config_int(gid, "min_overlap_seconds", seconds, now)
 
             cfg = await self.repos.get_effective_config(gid, self.settings)
-            day_key = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
+            dk = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
 
-            updated = await self.repos.recalc_today_all_duos(
-                gid,
-                day_key,
-                int(cfg["min_overlap_seconds"]),
-                now,
-            )
-
-            await ctx.reply(f"✅ min_overlap_seconds set to `{seconds}` sec. Recalc updated `{updated}` duos today.")
-        except Exception as e:
-            await self._fail(ctx, e)
+            fn = getattr(self.repos, "recalc_today_all_duos", None)
+            if fn:
+                updated = await fn(gid, dk, int(cfg["min_overlap_seconds"]), now)
+                await ctx.reply(f"✅ min_overlap_seconds set to `{seconds}` sec. Recalc updated `{updated}` duos today.")
+            else:
+                await ctx.reply(f"✅ min_overlap_seconds set to `{seconds}` sec. (Repo has no recalc_today_all_duos.)")
+        except Exception as err:
+            await self._fail(ctx, err)
 
     @commands.command(name="set_tick")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def set_tick(self, ctx: commands.Context, seconds: int):
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             now = now_utc_ts()
 
             seconds = max(5, min(int(seconds), 120))
             await self.repos.set_config_int(gid, "tick_seconds", seconds, now)
-            await ctx.reply(f"✅ tick_seconds set to `{seconds}` (seconds added per tick).")
-        except Exception as e:
-            await self._fail(ctx, e)
+            await ctx.reply(f"✅ tick_seconds set to `{seconds}`.")
+        except Exception as err:
+            await self._fail(ctx, err)
 
     @commands.command(name="recalc_today")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def recalc_today(self, ctx: commands.Context):
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             now = now_utc_ts()
 
             cfg = await self.repos.get_effective_config(gid, self.settings)
-            day_key = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
+            dk = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
 
-            updated = await self.repos.recalc_today_all_duos(
-                gid,
-                day_key,
-                int(cfg["min_overlap_seconds"]),
-                now,
-            )
+            fn = getattr(self.repos, "recalc_today_all_duos", None)
+            if not fn:
+                return await ctx.reply("❌ repos.recalc_today_all_duos not implemented.")
+
+            updated = await fn(gid, dk, int(cfg["min_overlap_seconds"]), now)
             await ctx.reply(f"✅ Recalc done. Updated `{updated}` duos today.")
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
     # ---------- LOOP / TIME ----------
 
     @commands.command(name="tick_status")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def tick_status(self, ctx: commands.Context):
         try:
             vc_cog = self._get_vc_cog()
@@ -193,21 +218,22 @@ class AdminCog(commands.Cog):
             if not loop:
                 return await ctx.reply("Couldn’t find tick task on VC cog (expected `.tick` or `.tick_loop`).")
 
-            running = loop.is_running()
-            await ctx.reply(f"Tick loop running: `{running}`")
-        except Exception as e:
-            await self._fail(ctx, e)
+            await ctx.reply(f"Tick loop running: `{loop.is_running()}`")
+        except Exception as err:
+            await self._fail(ctx, err)
 
     @commands.command(name="day_key")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def day_key_cmd(self, ctx: commands.Context):
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             now = now_utc_ts()
             cfg = await self.repos.get_effective_config(gid, self.settings)
 
-            day_key = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
+            dk = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
             dt_utc = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
 
             await ctx.reply(
@@ -215,79 +241,20 @@ class AdminCog(commands.Cog):
                 f"- now_utc: `{dt_utc}`\n"
                 f"- tz: `{cfg['default_tz']}`\n"
                 f"- grace_hour_local: `{cfg['grace_hour_local']}`\n"
-                f"- day_key: `{day_key}`"
+                f"- day_key: `{dk}`"
             )
-        except Exception as e:
-            await self._fail(ctx, e)
-
-    # ---------- VC STATE ----------
-
-    @commands.command(name="vc_state")
-    @commands.guild_only()
-    @commands.has_permissions(administrator=True)
-    async def vc_state_cmd(self, ctx: commands.Context):
-        try:
-            gid = ctx.guild.id
-
-            if not self.vc_state:
-                return await ctx.reply("vc_state not available (vc_tracker didn’t attach state).")
-
-            channels = getattr(self.vc_state, "channel_members", {}).get(gid, {})
-            if not channels:
-                return await ctx.reply("No tracked VC channels right now.")
-
-            lines = ["**VC State (runtime)**"]
-            for ch_id, members in channels.items():
-                ch = ctx.guild.get_channel(ch_id)
-                ch_name = ch.name if ch else f"unknown({ch_id})"
-                lines.append(f"\n🔊 **{ch_name}** ({ch_id})")
-                lines.append(f"Members counted: {len(members)}")
-                lines.append("```" + ", ".join(str(m) for m in sorted(members)) + "```")
-
-            await ctx.reply("\n".join(lines)[:1900])
-        except Exception as e:
-            await self._fail(ctx, e)
-
-    @commands.command(name="vc_buffer")
-    @commands.guild_only()
-    @commands.has_permissions(administrator=True)
-    async def vc_buffer_cmd(self, ctx: commands.Context):
-        try:
-            if not self.vc_state:
-                return await ctx.reply("vc_state not available.")
-
-            now = now_utc_ts()
-            gid = ctx.guild.id
-
-            recently_left = getattr(self.vc_state, "recently_left", {})
-            kept = []
-            for (g_id, u_id), (ch_id, left_ts) in recently_left.items():
-                if g_id != gid:
-                    continue
-                age = now - left_ts
-                kept.append((u_id, ch_id, age))
-
-            if not kept:
-                return await ctx.reply("No users currently in disconnect buffer.")
-
-            kept.sort(key=lambda x: x[2])
-            lines = ["**Disconnect Buffer (runtime)**"]
-            for u_id, ch_id, age in kept:
-                ch = ctx.guild.get_channel(ch_id)
-                ch_name = ch.name if ch else f"unknown({ch_id})"
-                lines.append(f"- user `{u_id}` left `{ch_name}` {int(age)}s ago")
-
-            await ctx.reply("\n".join(lines)[:1900])
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
     # ---------- DB HEALTH ----------
 
     @commands.command(name="db_counts")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
+    @admin_or_owner()
     async def db_counts(self, ctx: commands.Context):
         try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
             gid = ctx.guild.id
             counts = await self.repos.counts_for_guild(gid)
             out = [
@@ -297,94 +264,273 @@ class AdminCog(commands.Cog):
                 f"- duo_streaks: `{counts['duo_streaks']}`",
             ]
             await ctx.reply("\n".join(out))
-        except Exception as e:
-            await self._fail(ctx, e)
+        except Exception as err:
+            await self._fail(ctx, err)
 
-    @commands.command(name="duo_debug")
+    # ============================================================
+    # ✅ TEST / DEV COMMANDS (dangerous) — use for debugging only
+    # ============================================================
+
+    async def _today_key(self, guild_id: int, now: int) -> int:
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+        return day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
+
+    @commands.command(name="test_add_today")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
-    async def duo_debug(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
+    @admin_or_owner()
+    async def test_add_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
+        """
+        TEST: adds overlap seconds to TODAY for a duo.
+        Usage:
+          !test_add_today @a @b 60
+          !test_add_today @a @b 3m
+        """
         try:
-            if user_a.id == user_b.id:
-                return await ctx.reply("Pick two different users.")
+            if not self._require_repos():
+                return await ctx.reply("repos not available.")
+            if user_a.bot or user_b.bot or user_a.id == user_b.id:
+                return await ctx.reply("Pick two different real users.")
 
             gid = ctx.guild.id
             now = now_utc_ts()
-            cfg = await self.repos.get_effective_config(gid, self.settings)
-            day_key = day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
+            dk = await self._today_key(gid, now)
+            secs = max(0, _parse_seconds(amount))
 
             duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
-            today_seconds = await self.repos.add_duo_daily_seconds(gid, duo_id, day_key, 0, now)
-            current, longest, last_completed = await self.repos.get_streak_row(gid, duo_id)
+            total = await self.repos.add_duo_daily_seconds(gid, duo_id, dk, secs, now)
 
-            msg = (
-                f"**Duo Debug**\n"
-                f"- duo_id: `{duo_id}`\n"
-                f"- users: `{user_a.id}` + `{user_b.id}`\n"
-                f"- today day_key: `{day_key}`\n"
-                f"- today overlap_seconds: `{today_seconds}`\n"
-                f"- current_streak: `{current}`\n"
-                f"- longest_streak: `{longest}`\n"
-                f"- last_completed_day_key: `{last_completed}`\n"
-            )
-            await ctx.reply(msg)
-        except Exception as e:
-            await self._fail(ctx, e)
+            await ctx.reply(f"✅ TEST added `{secs}` sec to today. New today total=`{total}` sec (day_key `{dk}`).")
+        except Exception as err:
+            await self._fail(ctx, err)
 
-    @commands.command(name="db_last_daily")
+    @commands.command(name="test_set_today")
     @commands.guild_only()
-    @commands.has_permissions(administrator=True)
-    async def db_last_daily(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, n: int = 7):
+    @admin_or_owner()
+    async def test_set_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
+        """
+        TEST: sets TODAY overlap seconds exactly.
+        Usage:
+          !test_set_today @a @b 300
+          !test_set_today @a @b 10m
+        """
         try:
-            if user_a.id == user_b.id:
-                return await ctx.reply("Pick two different users.")
+            if not self._require_repos():
+                return await ctx.reply("repos not available.")
+            if user_a.bot or user_b.bot or user_a.id == user_b.id:
+                return await ctx.reply("Pick two different real users.")
 
             gid = ctx.guild.id
-            n = max(1, min(int(n), 30))
-
             now = now_utc_ts()
-            duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
+            dk = await self._today_key(gid, now)
+            secs = max(0, _parse_seconds(amount))
 
+            duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
             conn = await self.repos.raw_conn(gid)
-            cur = await conn.execute(
+
+            await conn.execute(
                 """
-                SELECT day_key, overlap_seconds, updated_at
-                FROM duo_daily
-                WHERE duo_id=?
-                ORDER BY day_key DESC
-                LIMIT ?
+                INSERT INTO duo_daily (duo_id, day_key, overlap_seconds, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(duo_id, day_key)
+                DO UPDATE SET overlap_seconds=excluded.overlap_seconds, updated_at=excluded.updated_at
                 """,
-                (duo_id, n),
+                (int(duo_id), int(dk), int(secs), int(now)),
             )
-            rows = await cur.fetchall()
-
-            if not rows:
-                return await ctx.reply("No duo_daily rows for that duo yet.")
-
-            lines = [f"**Last {n} duo_daily rows** (duo_id `{duo_id}`)"]
-            for dk, secs, updated_at in rows:
-                lines.append(f"- day_key `{dk}` | secs `{secs}` | updated_at `{updated_at}`")
-
-            await ctx.reply("\n".join(lines)[:1900])
-        except Exception as e:
-            await self._fail(ctx, e)
-
-    @commands.command(name="db_reset_guild")
-    @commands.guild_only()
-    @commands.has_permissions(administrator=True)
-    async def db_reset_guild(self, ctx: commands.Context, confirm: str = ""):
-        try:
-            if confirm != "CONFIRM":
-                return await ctx.reply("Type: `!db_reset_guild CONFIRM` (wipes THIS server only)")
-
-            gid = ctx.guild.id
-            conn = await self.repos.raw_conn(gid)
-
-            await conn.execute("DELETE FROM duo_daily")
-            await conn.execute("DELETE FROM duo_streaks")
-            await conn.execute("DELETE FROM duos")
             await conn.commit()
 
-            await ctx.reply("✅ Wiped all Ignio data for this server.")
-        except Exception as e:
-            await self._fail(ctx, e)
+            await ctx.reply(f"✅ TEST set today overlap_seconds=`{secs}` (day_key `{dk}`) for duo_id `{duo_id}`.")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="test_set_day")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_set_day(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, day_key: int, amount: str):
+        """
+        TEST: sets overlap seconds for a specific day_key (date.toordinal()).
+        Usage:
+          !test_set_day @a @b 739300 600
+        """
+        try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available.")
+            if user_a.bot or user_b.bot or user_a.id == user_b.id:
+                return await ctx.reply("Pick two different real users.")
+
+            gid = ctx.guild.id
+            now = now_utc_ts()
+            secs = max(0, _parse_seconds(amount))
+
+            duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
+            conn = await self.repos.raw_conn(gid)
+
+            await conn.execute(
+                """
+                INSERT INTO duo_daily (duo_id, day_key, overlap_seconds, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(duo_id, day_key)
+                DO UPDATE SET overlap_seconds=excluded.overlap_seconds, updated_at=excluded.updated_at
+                """,
+                (int(duo_id), int(day_key), int(secs), int(now)),
+            )
+            await conn.commit()
+
+            await ctx.reply(f"✅ TEST set day_key `{day_key}` overlap_seconds=`{secs}` for duo_id `{duo_id}`.")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="test_set_streak")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_set_streak(
+        self,
+        ctx: commands.Context,
+        user_a: discord.Member,
+        user_b: discord.Member,
+        current_streak: int,
+        longest_streak: int,
+        last_completed_day_key: int,
+    ):
+        """
+        TEST: force-set streak row values.
+        Usage:
+          !test_set_streak @a @b 5 12 739300
+        """
+        try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available.")
+            if user_a.bot or user_b.bot or user_a.id == user_b.id:
+                return await ctx.reply("Pick two different real users.")
+
+            gid = ctx.guild.id
+            now = now_utc_ts()
+
+            duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
+            conn = await self.repos.raw_conn(gid)
+
+            await conn.execute(
+                """
+                INSERT INTO duo_streaks (duo_id, current_streak, longest_streak, last_completed_day_key, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(duo_id)
+                DO UPDATE SET
+                  current_streak=excluded.current_streak,
+                  longest_streak=excluded.longest_streak,
+                  last_completed_day_key=excluded.last_completed_day_key,
+                  updated_at=excluded.updated_at
+                """,
+                (int(duo_id), int(current_streak), int(longest_streak), int(last_completed_day_key), int(now)),
+            )
+            await conn.commit()
+
+            await ctx.reply(
+                f"✅ TEST set streaks for duo_id `{duo_id}`:\n"
+                f"- current={current_streak}\n- longest={longest_streak}\n- last_completed_day_key={last_completed_day_key}"
+            )
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="test_clear_duo")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_clear_duo(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
+        """
+        TEST: deletes a specific duo and all its rows.
+        Usage:
+          !test_clear_duo @a @b
+        """
+        try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available.")
+            if user_a.bot or user_b.bot or user_a.id == user_b.id:
+                return await ctx.reply("Pick two different real users.")
+
+            gid = ctx.guild.id
+            now = now_utc_ts()
+            duo_id = await self.repos.get_or_create_duo(gid, user_a.id, user_b.id, now)
+            conn = await self.repos.raw_conn(gid)
+
+            await conn.execute("DELETE FROM duo_daily WHERE duo_id=?", (int(duo_id),))
+            await conn.execute("DELETE FROM duo_streaks WHERE duo_id=?", (int(duo_id),))
+            await conn.execute("DELETE FROM duos WHERE duo_id=?", (int(duo_id),))
+            await conn.commit()
+
+            await ctx.reply(f"✅ TEST cleared duo_id `{duo_id}` and all associated rows.")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    # ---------- DM TESTS (viewable embeds) ----------
+
+    async def _dm_embed(self, member: discord.Member, embed: discord.Embed) -> bool:
+        try:
+            await member.send(embed=embed)
+            return True
+        except Exception:
+            return False
+
+    @commands.command(name="test_dm_restore")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_dm_restore(self, ctx: commands.Context, member: discord.Member):
+        """
+        TEST: sends a restore-available DM (white_fire) as an embed.
+        Usage:
+          !test_dm_restore @user
+        """
+        try:
+            embed = discord.Embed(
+                title=f"{emoji('white_fire')} Streak Restore Available",
+                description="Your duo streak ended, but you can still restore it.",
+            )
+            embed.add_field(name="What to do", value="Hop in VC with your duo before the restore window ends.", inline=False)
+            embed.set_footer(text="(test DM)")
+
+            ok = await self._dm_embed(member, embed)
+            await ctx.reply("✅ Restore DM sent." if ok else "❌ Could not DM (user closed DMs?)")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="test_dm_ice")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_dm_ice(self, ctx: commands.Context, member: discord.Member):
+        """
+        TEST: sends a restore-expired DM (ice) as an embed.
+        Usage:
+          !test_dm_ice @user
+        """
+        try:
+            embed = discord.Embed(
+                title=f"{emoji('ice')} Streak Lost",
+                description="Restore window expired. This streak can’t be restored anymore.",
+            )
+            embed.set_footer(text="(test DM)")
+
+            ok = await self._dm_embed(member, embed)
+            await ctx.reply("✅ Ice DM sent." if ok else "❌ Could not DM (user closed DMs?)")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="test_dm_text")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def test_dm_text(self, ctx: commands.Context, member: discord.Member, *, message: str):
+        """
+        TEST: send a custom DM message (plain text).
+        Usage:
+          !test_dm_text @user hello there
+        """
+        try:
+            try:
+                await member.send(f"(test DM) {message}")
+                ok = True
+            except Exception:
+                ok = False
+
+            await ctx.reply("✅ sent DM" if ok else "❌ could not DM (user closed DMs?)")
+        except Exception as err:
+            await self._fail(ctx, err)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AdminCog(bot))

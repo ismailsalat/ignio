@@ -3,10 +3,20 @@ import discord
 from bot.config import e
 from bot.ui.heatmap import render_month_heatmap
 
+
 def progress_bar(current: int, goal: int, width: int) -> str:
-    current = max(0, min(current, goal))
-    filled = int((current / goal) * width) if goal > 0 else 0
+    current = max(0, int(current))
+    goal = max(0, int(goal))
+    width = max(6, int(width))
+
+    if goal <= 0:
+        filled = 0
+    else:
+        current = min(current, goal)
+        filled = int((current / goal) * width)
+
     return "█" * filled + "░" * (width - filled)
+
 
 def fmt_hms(seconds: int) -> str:
     seconds = max(0, int(seconds))
@@ -18,6 +28,7 @@ def fmt_hms(seconds: int) -> str:
     if m > 0:
         return f"{m}m {s}s"
     return f"{s}s"
+
 
 def duo_status_embed(
     *,
@@ -31,6 +42,8 @@ def duo_status_embed(
     status: str,
     connection_score_seconds: int,
     heatmap_day_to_secs: dict[int, int],
+    heatmap_met_emoji: str,     # ✅ passed from effective config
+    heatmap_empty_emoji: str,   # ✅ passed from effective config
 ) -> discord.Embed:
 
     if status == "frozen":
@@ -70,9 +83,14 @@ def duo_status_embed(
         inline=True,
     )
 
-    heat = render_month_heatmap(heatmap_day_to_secs, min_required=min_required)
+    # ✅ FIX: pass emojis explicitly (no hardcoding in heatmap.py)
+    heat = render_month_heatmap(
+        heatmap_day_to_secs,
+        min_required=min_required,
+        met_emoji=heatmap_met_emoji,
+        empty_emoji=heatmap_empty_emoji,
+    )
     embed.add_field(name="This month", value=f"```{heat}```", inline=False)
-
 
     embed.set_footer(text="Tip: hop in VC together to fill today’s bar 🔥")
     return embed
