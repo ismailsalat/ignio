@@ -1,4 +1,5 @@
 # bot/cogs/streaks.py
+
 import calendar
 import discord
 from discord.ext import commands
@@ -14,21 +15,21 @@ class StreaksCog(commands.Cog):
         self.settings = settings
         self.repos = repos
 
+    # ---------------- internal helpers ----------------
+
     def _get_live_duo_from_vc(self, member: discord.Member):
+        """Return other user if VC has exactly 2 humans."""
         if not member or not member.voice or not member.voice.channel:
             return None
 
-        ch = member.voice.channel
-        humans = [m for m in ch.members if not m.bot]
+        humans = [m for m in member.voice.channel.members if not m.bot]
         if len(humans) != 2:
             return None
 
         other = humans[0] if humans[1].id == member.id else humans[1]
-        if other.id == member.id:
-            return None
         return other
 
-    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool) -> bool:
+    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool):
         try:
             conn = await self.repos.raw_conn(guild_id)
             fallback = "1" if default_private else "0"
@@ -50,7 +51,7 @@ class StreaksCog(commands.Cog):
         except Exception:
             return False
 
-    async def _can_view_duo(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, cfg: dict) -> bool:
+    async def _can_view_duo(self, ctx, user_a, user_b, cfg):
         default_private = bool(cfg.get("privacy_default_private", False))
         admin_can_view = bool(cfg.get("privacy_admin_can_view", True))
 
@@ -61,21 +62,70 @@ class StreaksCog(commands.Cog):
         if ctx.author.id in (user_a.id, user_b.id):
             return True
 
-        if admin_can_view and isinstance(ctx.author, discord.Member) and ctx.author.guild_permissions.administrator:
+        if admin_can_view and ctx.author.guild_permissions.administrator:
             return True
 
         return False
 
-    async def _send_duo_embed(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
-        if ctx.guild is None:
-            return await ctx.reply("This command only works in a server.")
+    def _streak_help_embed(self, ctx: commands.Context) -> discord.Embed:
+        """
+        Help embed for streak command.
+        Kept as a helper so you can later move it into bot/ui/help_embeds.py if you want.
+        """
+        prefix = "!"
+        # Try to pull prefix from bot if available (dev/prod prefix support)
+        try:
+            if isinstance(getattr(self.bot, "command_prefix", None), str):
+                prefix = self.bot.command_prefix
+        except Exception:
+            pass
+
+        embed = discord.Embed(
+            title="🔥 Ignio — Streak Help",
+            description="Everything streak-related lives under one command.",
+        )
+
+        embed.add_field(
+            name="Quick Commands",
+            value=(
+                f"`{prefix}streak` → **quick check** with the person you’re in VC with (2 humans)\n"
+                f"`{prefix}streak live` → **live VC check** (same idea, explicit)\n"
+                f"`{prefix}streak @user` → your streak with someone\n"
+                f"`{prefix}streak @user1 @user2` → streak between two people (privacy applies)"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="How to start tracking",
+            value="Join a VC with **exactly 2 real users**. Ignio starts tracking overlap automatically.",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Common issues",
+            value=(
+                "• If you’re alone in VC → invite 1 person\n"
+                "• If there are 3+ people → it won’t count as a duo\n"
+                "• Bots don’t count\n"
+                "• If a duo is private → only the duo (and admins if enabled) can view"
+            ),
+            inline=False,
+        )
+
+        # Optional footer hint
+        embed.set_footer(text="Tip: Use !streak help anytime you’re confused.")
+        return embed
+
+    async def _send_streak_help(self, ctx: commands.Context):
+        return await ctx.reply(embed=self._streak_help_embed(ctx))
+
+    async def _send_duo_embed(self, ctx, user_a, user_b):
 
         gid = ctx.guild.id
         now = now_utc_ts()
-
         cfg = await self.repos.get_effective_config(gid, self.settings)
 
-        # ✅ privacy gate
         if not await self._can_view_duo(ctx, user_a, user_b, cfg):
             return await ctx.reply("🔒 This duo streak is private.")
 
@@ -89,15 +139,13 @@ class StreaksCog(commands.Cog):
 
         today_key = day_key_from_utc_ts(now, default_tz, grace_hour)
 
-        # ✅ IMPORTANT: view-only. Do NOT create duo just by checking.
         duo_id = await self.repos.get_duo_id(gid, user_a.id, user_b.id)
         if duo_id is None:
             return await ctx.reply(
                 "No streak yet for this duo.\n"
-                "Join a VC **with exactly 2 real users** and it’ll start tracking."
+                "Join a VC with exactly 2 real users to start tracking."
             )
 
-        # 0 seconds write = safe read of today total (your repo returns current value)
         today_seconds = await self.repos.add_duo_daily_seconds(gid, duo_id, today_key, 0, now)
         current, longest, _ = await self.repos.get_streak_row(gid, duo_id)
 
@@ -126,44 +174,51 @@ class StreaksCog(commands.Cog):
 
         await ctx.reply(embed=embed)
 
-    # ---------------- commands ----------------
+    # ---------------- command ----------------
 
-    @commands.command(name="streak")
+    @commands.command(name="streak", aliases=["duo"])
     @commands.guild_only()
-    async def streak(self, ctx: commands.Context, user1: discord.Member = None, user2: discord.Member = None):
-        if user1 is None and user2 is None:
-            if not isinstance(ctx.author, discord.Member):
-                return await ctx.reply("Usage: `!streak @user1`")
+    async def streak(self, ctx, arg1=None, arg2: discord.Member = None):
+        """
+        !streak
+          -> quick check with VC duo (2 humans)
+        !streak live
+          -> explicit live VC check
+        !streak help
+          -> help embed
+        !streak @user
+          -> your streak with @user
+        !streak @user1 @user2
+          -> streak between two users (privacy applies)
+        """
 
+        # !streak help
+        if isinstance(arg1, str) and arg1.lower() in ("help", "h", "?"):
+            return await self._send_streak_help(ctx)
+
+        # !streak live
+        if isinstance(arg1, str) and arg1.lower() == "live":
             other = self._get_live_duo_from_vc(ctx.author)
             if other is None:
-                return await ctx.reply("Usage: `!streak @user1` (or join a VC with exactly 1 other real user)")
+                # redirect to help instead of a confusing message
+                return await self._send_streak_help(ctx)
+            return await self._send_duo_embed(ctx, ctx.author, other)
 
-            a, b = ctx.author, other
+        # !streak  (quick VC check)
+        if arg1 is None:
+            other = self._get_live_duo_from_vc(ctx.author)
+            if other is None:
+                # redirect to help embed
+                return await self._send_streak_help(ctx)
+            return await self._send_duo_embed(ctx, ctx.author, other)
 
-        elif user1 is not None and user2 is None:
-            a, b = ctx.author, user1
+        # !streak @user
+        if isinstance(arg1, discord.Member) and arg2 is None:
+            return await self._send_duo_embed(ctx, ctx.author, arg1)
 
-        else:
-            a, b = user1, user2
+        # !streak @user1 @user2
+        if isinstance(arg1, discord.Member) and isinstance(arg2, discord.Member):
+            return await self._send_duo_embed(ctx, arg1, arg2)
 
-        if a is None or b is None:
-            return await ctx.reply("Usage: `!streak @user1` or `!streak @user1 @user2`")
-        if a.bot or b.bot:
-            return await ctx.reply("Bots don't count for streaks.")
-        if a.id == b.id:
-            return await ctx.reply("Pick two different users.")
-
-        await self._send_duo_embed(ctx, a, b)
-
-    @commands.command(name="progress")
-    @commands.guild_only()
-    async def progress(self, ctx: commands.Context):
-        if not isinstance(ctx.author, discord.Member):
-            return await ctx.reply("This command only works for server members.")
-
-        other = self._get_live_duo_from_vc(ctx.author)
-        if other is None:
-            return await ctx.reply("You need to be in a VC with exactly **1 other real user** to use `!progress`.")
-
-        await self._send_duo_embed(ctx, ctx.author, other)
+        # anything else -> help
+        return await self._send_streak_help(ctx)

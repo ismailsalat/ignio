@@ -18,11 +18,12 @@ async def load_all(bot, settings, repos, vc_state=None):
     bot.settings = settings
     bot.repos = repos
 
+    # ✅ Always ensure a shared VC state exists (but don't warn — this is normal)
     if vc_state is None:
-        print("[Ignio] WARNING: vc_state not passed — creating fallback")
         from bot.core.state import VcRuntimeState
         vc_state = VcRuntimeState()
 
+    # expose it on bot so other cogs / utilities can access it
     bot.vc_state = vc_state
 
     vc_cog = None
@@ -42,6 +43,13 @@ async def load_all(bot, settings, repos, vc_state=None):
         traceback.print_exc()
         vc_cog = None
 
+    # Determine the best state reference for admin tools:
+    # - if vc_cog exposes .state, use it (most accurate)
+    # - else use the shared vc_state we created
+    effective_state = getattr(vc_cog, "state", None) if vc_cog else None
+    if effective_state is None:
+        effective_state = vc_state
+
     # ---------------- ADMIN ----------------
     try:
         await bot.add_cog(
@@ -49,7 +57,7 @@ async def load_all(bot, settings, repos, vc_state=None):
                 bot=bot,
                 settings=settings,
                 repos=repos,
-                vc_state=getattr(vc_cog, "state", None) if vc_cog else vc_state,
+                vc_state=effective_state,
                 vc_cog=vc_cog,
             )
         )
