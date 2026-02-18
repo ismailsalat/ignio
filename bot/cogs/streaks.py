@@ -17,6 +17,42 @@ class StreaksCog(commands.Cog):
 
     # ---------------- internal helpers ----------------
 
+    def _get_prefix(self) -> str:
+        # dev/prod prefix support (falls back to "!")
+        try:
+            p = getattr(self.bot, "command_prefix", None)
+            if isinstance(p, str) and p.strip():
+                return p.strip()
+        except Exception:
+            pass
+        return "!"
+
+    def _help_hint(self) -> str:
+        p = self._get_prefix()
+        return f"Need help? Use `{p}streak help`."
+
+    async def _soft_fail(self, ctx: commands.Context, msg: str):
+        # short helpful message (no full embed)
+        return await ctx.reply(f"{msg}\n{self._help_hint()}")
+
+    async def _vc_requirements_fail(self, ctx: commands.Context, mode_label: str = "this command"):
+        """
+        Give a clear reason why VC-based checks didn't work.
+        """
+        member = ctx.author if isinstance(ctx.author, discord.Member) else None
+        if not member or not member.voice or not member.voice.channel:
+            return await self._soft_fail(ctx, f"You're not in a voice channel, so I can't run {mode_label}.")
+
+        ch = member.voice.channel
+        humans = [m for m in ch.members if not m.bot]
+        if len(humans) < 2:
+            return await self._soft_fail(ctx, f"You need exactly **1 other real user** in VC to run {mode_label}.")
+        if len(humans) > 2:
+            return await self._soft_fail(ctx, f"Too many people in VC. You need **exactly 2 real users** to run {mode_label}.")
+
+        # Edge case: 2 humans but still somehow no duo (shouldn't happen often)
+        return await self._soft_fail(ctx, f"I couldn't detect a valid duo for {mode_label}.")
+
     def _get_live_duo_from_vc(self, member: discord.Member):
         """Return other user if VC has exactly 2 humans."""
         if not member or not member.voice or not member.voice.channel:
@@ -72,13 +108,7 @@ class StreaksCog(commands.Cog):
         Help embed for streak command.
         Kept as a helper so you can later move it into bot/ui/help_embeds.py if you want.
         """
-        prefix = "!"
-        # Try to pull prefix from bot if available (dev/prod prefix support)
-        try:
-            if isinstance(getattr(self.bot, "command_prefix", None), str):
-                prefix = self.bot.command_prefix
-        except Exception:
-            pass
+        prefix = self._get_prefix()
 
         embed = discord.Embed(
             title="🔥 Ignio — Streak Help",
@@ -89,7 +119,7 @@ class StreaksCog(commands.Cog):
             name="Quick Commands",
             value=(
                 f"`{prefix}streak` → **quick check** with the person you’re in VC with (2 humans)\n"
-                f"`{prefix}streak live` → **live VC check** (same idea, explicit)\n"
+                f"`{prefix}streak live` → **live VC check** (explicit VC check)\n"
                 f"`{prefix}streak @user` → your streak with someone\n"
                 f"`{prefix}streak @user1 @user2` → streak between two people (privacy applies)"
             ),
@@ -113,8 +143,7 @@ class StreaksCog(commands.Cog):
             inline=False,
         )
 
-        # Optional footer hint
-        embed.set_footer(text="Tip: Use !streak help anytime you’re confused.")
+        embed.set_footer(text=f"Tip: Use {prefix}streak help anytime.")
         return embed
 
     async def _send_streak_help(self, ctx: commands.Context):
@@ -196,20 +225,19 @@ class StreaksCog(commands.Cog):
         if isinstance(arg1, str) and arg1.lower() in ("help", "h", "?"):
             return await self._send_streak_help(ctx)
 
-        # !streak live
+        # !streak live (explicit VC check)
         if isinstance(arg1, str) and arg1.lower() == "live":
             other = self._get_live_duo_from_vc(ctx.author)
             if other is None:
-                # redirect to help instead of a confusing message
-                return await self._send_streak_help(ctx)
+                return await self._vc_requirements_fail(ctx, mode_label="`streak live`")
             return await self._send_duo_embed(ctx, ctx.author, other)
 
-        # !streak  (quick VC check)
+        # !streak (quick VC check)
         if arg1 is None:
             other = self._get_live_duo_from_vc(ctx.author)
             if other is None:
-                # redirect to help embed
-                return await self._send_streak_help(ctx)
+                # short reason + help hint (less spammy than always showing embed)
+                return await self._vc_requirements_fail(ctx, mode_label="`streak`")
             return await self._send_duo_embed(ctx, ctx.author, other)
 
         # !streak @user
@@ -220,5 +248,5 @@ class StreaksCog(commands.Cog):
         if isinstance(arg1, discord.Member) and isinstance(arg2, discord.Member):
             return await self._send_duo_embed(ctx, arg1, arg2)
 
-        # anything else -> help
-        return await self._send_streak_help(ctx)
+        # invalid usage -> short message + help hint
+        return await self._soft_fail(ctx, "Invalid usage.")
