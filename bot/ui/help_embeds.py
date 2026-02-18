@@ -64,11 +64,7 @@ def streak_help_embed(ctx) -> discord.Embed:
     """
     Clean, user-friendly help embed for streak command.
     """
-    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None) or getattr(ctx, "_bot", None) or getattr(ctx, "client", None) or None)
-    # the line above is defensive; usually ctx.bot exists
-    if hasattr(ctx, "bot"):
-        prefix = _get_prefix_from_bot(ctx.bot)
-
+    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
     guild = getattr(ctx, "guild", None)
 
     fire = _emoji(guild, "fire", "🔥")
@@ -129,4 +125,70 @@ def streak_help_embed(ctx) -> discord.Embed:
     )
 
     embed.set_footer(text=f"Tip: If a command fails, it will tell you why — then you can use {prefix}streak help.")
+    return embed
+
+
+def leaderboard_help_embed(ctx) -> discord.Embed:
+    """
+    Clean, user-friendly help embed for leaderboard command.
+    """
+    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
+    guild = getattr(ctx, "guild", None)
+
+    chart = _emoji(guild, "chart", "📊")
+    fire = _emoji(guild, "fire", "🔥")
+    trophy = _emoji(guild, "trophy", "🏆")
+    shake = _emoji(guild, "handshake", "🤝")
+    lock = _emoji(guild, "lock", "🔒")
+
+    embed = discord.Embed(
+        title=f"{chart} Ignio Leaderboards",
+        description="Leaderboards show **public** duos only (private duos are hidden).",
+    )
+
+    embed.add_field(
+        name="Commands",
+        value=(
+            f"`{prefix}lb` → overview (top 5 of each)\n"
+            f"`{prefix}lb streak` → current streak leaderboard\n"
+            f"`{prefix}lb best` → best/record streak leaderboard\n"
+            f"`{prefix}lb cs` → connection score leaderboard\n"
+            f"`{prefix}lb help` → show this menu"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Examples",
+        value=(
+            f"`{prefix}lb`\n"
+            f"`{prefix}lb streak`\n"
+            f"`{prefix}lb best`\n"
+            f"`{prefix}lb cs`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{fire} Current vs {trophy} Best",
+        value=(
+            f"{fire} **Current** = how many days the duo streak is *right now*\n"
+            f"{trophy} **Best** = the duo’s all-time record"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{shake} Connection score",
+        value="Total time spent together in VC (shown like `2h 10m`).",
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{lock} Privacy",
+        value="If either user enables privacy, that duo will **not** appear on leaderboards.",
+        inline=False,
+    )
+
+    embed.set_footer(text=f"Tip: Use {prefix}lb help anytime. (Legacy cmds still work: {prefix}streaklb / {prefix}cslb)")
     return embed

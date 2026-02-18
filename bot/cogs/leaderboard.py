@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from bot.config import e
 from bot.core.timecore import now_utc_ts
+from bot.ui.help_embeds import leaderboard_help_embed
 
 
 def fmt_hms(seconds: int) -> str:
@@ -27,6 +28,25 @@ class LeaderboardCog(commands.Cog):
         self.repos = repos
 
     # ---------------- helpers ----------------
+
+    def _get_prefix(self) -> str:
+        try:
+            p = getattr(self.bot, "command_prefix", None)
+            if isinstance(p, str) and p.strip():
+                return p.strip()
+        except Exception:
+            pass
+        return "!"
+
+    def _help_hint(self) -> str:
+        p = self._get_prefix()
+        return f"Need help? Use `{p}lb help`."
+
+    async def _soft_fail(self, ctx: commands.Context, msg: str):
+        return await ctx.reply(f"{msg}\n{self._help_hint()}")
+
+    async def _send_lb_help(self, ctx: commands.Context):
+        return await ctx.reply(embed=leaderboard_help_embed(ctx))
 
     def _name_for_duo(self, guild: discord.Guild, u1: int, u2: int) -> str:
         m1 = guild.get_member(u1)
@@ -155,30 +175,22 @@ class LeaderboardCog(commands.Cog):
         if rank:
             embed.set_footer(text=f"Your VC duo rank: #{rank}")
 
-    # ---------------- commands ----------------
+    # ---------------- internal renderers ----------------
 
-    @commands.command(name="streaklb")
-    @commands.guild_only()
-    async def streaklb(self, ctx: commands.Context, kind: str = "streak"):
-        """
-        Usage:
-          !streaklb          -> top current streak
-          !streaklb streak   -> top current streak
-          !streaklb best     -> top best streak
-        """
+    async def _send_streak_leaderboard(self, ctx: commands.Context, mode: str):
         gid = ctx.guild.id
-        kind = (kind or "streak").lower().strip()
+        mode = (mode or "streak").lower().strip()
 
-        if kind in ("streak", "current"):
+        if mode in ("streak", "current"):
             rows = await self.repos.top_by_current_streak(gid, limit=50)
             title = f"{e('fire')} Streak Leaderboard — Current"
             rank_kind = "streak"
-        elif kind in ("best", "record"):
+        elif mode in ("best", "record"):
             rows = await self.repos.top_by_best_streak(gid, limit=50)
             title = f"{e('fire')} Streak Leaderboard — Best"
             rank_kind = "best"
         else:
-            return await ctx.reply("Use: `!streaklb` | `!streaklb best`")
+            return await self._soft_fail(ctx, "Invalid leaderboard type. Use `lb streak`, `lb best`, or `lb cs`.")
 
         embed = discord.Embed(title=title)
         if not rows:
@@ -191,13 +203,7 @@ class LeaderboardCog(commands.Cog):
         await self._try_add_rank_footer(ctx, embed, rank_kind)
         await ctx.reply(embed=embed)
 
-    @commands.command(name="cslb")
-    @commands.guild_only()
-    async def cslb(self, ctx: commands.Context):
-        """
-        Usage:
-          !cslb  -> top connection score
-        """
+    async def _send_cs_leaderboard(self, ctx: commands.Context):
         gid = ctx.guild.id
         rows = await self.repos.top_by_connection_score(gid, limit=50)
 
@@ -212,25 +218,8 @@ class LeaderboardCog(commands.Cog):
         await self._try_add_rank_footer(ctx, embed, "cs")
         await ctx.reply(embed=embed)
 
-    @commands.command(name="lb")
-    @commands.guild_only()
-    async def lb(self, ctx: commands.Context, kind: str | None = None):
-        """
-        Usage:
-          !lb           -> combined overview (top 5 of each)
-          !lb streak    -> same as streaklb current
-          !lb best      -> same as streaklb best
-          !lb cs        -> same as cslb
-        """
+    async def _send_overview(self, ctx: commands.Context):
         gid = ctx.guild.id
-        kind = (kind or "").lower().strip()
-
-        if kind in ("streak", "current"):
-            return await self.streaklb(ctx, "streak")
-        if kind in ("best", "record"):
-            return await self.streaklb(ctx, "best")
-        if kind in ("cs", "score", "connection"):
-            return await self.cslb(ctx)
 
         cur_rows = await self.repos.top_by_current_streak(gid, limit=50)
         best_rows = await self.repos.top_by_best_streak(gid, limit=50)
@@ -253,5 +242,58 @@ class LeaderboardCog(commands.Cog):
         embed.add_field(name="🏆 Best Streak", value="\n".join(best_lines)[:1024], inline=False)
         embed.add_field(name="🤝 Connection Score", value="\n".join(cs_lines)[:1024], inline=False)
 
-        embed.set_footer(text="Use !streaklb | !streaklb best | !cslb for full top 10")
+        embed.set_footer(text=f"Use {self._get_prefix()}lb streak | {self._get_prefix()}lb best | {self._get_prefix()}lb cs")
         await ctx.reply(embed=embed)
+
+    # ---------------- commands ----------------
+
+    @commands.command(name="lb", aliases=["leaderboard"])
+    @commands.guild_only()
+    async def lb(self, ctx: commands.Context, kind: str | None = None):
+        """
+        Clean hub command:
+          !lb           -> overview (top 5 of each)
+          !lb streak    -> current streak leaderboard
+          !lb best      -> best streak leaderboard
+          !lb cs        -> connection score leaderboard
+          !lb help      -> help embed
+        """
+        kind = (kind or "").lower().strip()
+
+        if kind in ("help", "h", "?"):
+            return await self._send_lb_help(ctx)
+
+        if kind in ("", "all", "overview"):
+            return await self._send_overview(ctx)
+
+        if kind in ("streak", "current"):
+            return await self._send_streak_leaderboard(ctx, "streak")
+
+        if kind in ("best", "record"):
+            return await self._send_streak_leaderboard(ctx, "best")
+
+        if kind in ("cs", "score", "connection"):
+            return await self._send_cs_leaderboard(ctx)
+
+        return await self._soft_fail(ctx, "Invalid option.")
+
+    # --- Backwards-compatible commands (hidden to reduce confusion) ---
+
+    @commands.command(name="streaklb", hidden=True)
+    @commands.guild_only()
+    async def streaklb(self, ctx: commands.Context, kind: str = "streak"):
+        """
+        Legacy alias:
+          !streaklb          -> !lb streak
+          !streaklb best     -> !lb best
+        """
+        kind = (kind or "streak").lower().strip()
+        if kind in ("best", "record"):
+            return await self.lb(ctx, "best")
+        return await self.lb(ctx, "streak")
+
+    @commands.command(name="cslb", hidden=True)
+    @commands.guild_only()
+    async def cslb(self, ctx: commands.Context):
+        """Legacy alias: !cslb -> !lb cs"""
+        return await self.lb(ctx, "cs")
