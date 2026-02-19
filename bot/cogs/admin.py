@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from bot.core.timecore import now_utc_ts, day_key_from_utc_ts
 from bot.config import e as emoji
+from bot.ui.help_embeds import admin_help_embed
 
 
 def _parse_seconds(text: str) -> int:
@@ -62,6 +63,24 @@ class AdminCog(commands.Cog):
         self.vc_state = vc_state if vc_state is not None else getattr(bot, "vc_state", None)
         self.vc_cog = vc_cog
 
+    # ---------------- shared helpers ----------------
+
+    def _get_prefix(self) -> str:
+        try:
+            p = getattr(self.bot, "command_prefix", None)
+            if isinstance(p, str) and p.strip():
+                return p.strip()
+        except Exception:
+            pass
+        return "!"
+
+    async def _send_admin_help(self, ctx: commands.Context):
+        return await ctx.reply(embed=admin_help_embed(ctx))
+
+    async def _soft_fail(self, ctx: commands.Context, msg: str):
+        p = self._get_prefix()
+        return await ctx.reply(f"{msg}\nNeed help? Use `{p}admin help`.")
+
     def _get_vc_cog(self):
         if self.vc_cog:
             return self.vc_cog
@@ -84,9 +103,176 @@ class AdminCog(commands.Cog):
     def _require_repos(self) -> bool:
         return bool(self.repos)
 
-    # ---------- BASIC ----------
+    async def _today_key(self, guild_id: int, now: int) -> int:
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+        return day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
 
-    @commands.command(name="ping")
+    # ============================================================
+    # ✅ NEW: Admin hub command (streak-style)
+    # ============================================================
+
+    @commands.group(name="admin", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_group(self, ctx: commands.Context):
+        # `!admin` -> help
+        return await self._send_admin_help(ctx)
+
+    @admin_group.command(name="help")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_help(self, ctx: commands.Context):
+        return await self._send_admin_help(ctx)
+
+    # ---- admin config ----
+
+    @admin_group.command(name="config")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_config(self, ctx: commands.Context):
+        return await self.ignio_config(ctx)
+
+    @admin_group.group(name="set", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_set(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin set min <value>` or `admin set tick <seconds>`.")
+
+    @admin_set.command(name="min")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_set_min(self, ctx: commands.Context, value: str):
+        return await self.set_min(ctx, value)
+
+    @admin_set.command(name="tick")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_set_tick(self, ctx: commands.Context, seconds: int):
+        return await self.set_tick(ctx, seconds)
+
+    @admin_group.group(name="recalc", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_recalc(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin recalc today`.")
+
+    @admin_recalc.command(name="today")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_recalc_today(self, ctx: commands.Context):
+        return await self.recalc_today(ctx)
+
+    # ---- admin loop/time ----
+
+    @admin_group.group(name="tick", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_tick(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin tick status`.")
+
+    @admin_tick.command(name="status")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_tick_status(self, ctx: commands.Context):
+        return await self.tick_status(ctx)
+
+    @admin_group.command(name="daykey")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_daykey(self, ctx: commands.Context):
+        return await self.day_key_cmd(ctx)
+
+    # ---- admin db ----
+
+    @admin_group.group(name="db", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_db(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin db counts`.")
+
+    @admin_db.command(name="counts")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_db_counts(self, ctx: commands.Context):
+        return await self.db_counts(ctx)
+
+    # ---- admin tests ----
+
+    @admin_group.group(name="test", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin test ...` (see `admin help`).")
+
+    @admin_test.command(name="add_today")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test_add_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
+        return await self.test_add_today(ctx, user_a, user_b, amount)
+
+    @admin_test.command(name="set_today")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test_set_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
+        return await self.test_set_today(ctx, user_a, user_b, amount)
+
+    @admin_test.command(name="set_day")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test_set_day(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, day_key: int, amount: str):
+        return await self.test_set_day(ctx, user_a, user_b, day_key, amount)
+
+    @admin_test.command(name="set_streak")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test_set_streak(
+        self,
+        ctx: commands.Context,
+        user_a: discord.Member,
+        user_b: discord.Member,
+        current_streak: int,
+        longest_streak: int,
+        last_completed_day_key: int,
+    ):
+        return await self.test_set_streak(ctx, user_a, user_b, current_streak, longest_streak, last_completed_day_key)
+
+    @admin_test.command(name="clear_duo")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_test_clear_duo(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
+        return await self.test_clear_duo(ctx, user_a, user_b)
+
+    # ---- admin dm ----
+
+    @admin_group.group(name="dm", invoke_without_command=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_dm(self, ctx: commands.Context):
+        return await self._soft_fail(ctx, "Use `admin dm restore|ice|text ...`.")
+
+    @admin_dm.command(name="restore")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_dm_restore(self, ctx: commands.Context, member: discord.Member):
+        return await self.test_dm_restore(ctx, member)
+
+    @admin_dm.command(name="ice")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_dm_ice(self, ctx: commands.Context, member: discord.Member):
+        return await self.test_dm_ice(ctx, member)
+
+    @admin_dm.command(name="text")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_dm_text(self, ctx: commands.Context, member: discord.Member, *, message: str):
+        return await self.test_dm_text(ctx, member, message=message)
+
+    # ============================================================
+    # ✅ ORIGINAL COMMANDS (kept, but hidden to reduce confusion)
+    # ============================================================
+
+    @commands.command(name="ping", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def ping(self, ctx: commands.Context):
@@ -95,7 +281,7 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="loaded")
+    @commands.command(name="loaded", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def loaded(self, ctx: commands.Context):
@@ -108,7 +294,7 @@ class AdminCog(commands.Cog):
 
     # ---------- CONFIG (DB-backed) ----------
 
-    @commands.command(name="ignio_config")
+    @commands.command(name="ignio_config", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def ignio_config(self, ctx: commands.Context):
@@ -135,14 +321,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="set_min")
+    @commands.command(name="set_min", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def set_min(self, ctx: commands.Context, value: str):
-        """
-        !set_min 120
-        !set_min 2m
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available on AdminCog.")
@@ -165,7 +347,7 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="set_tick")
+    @commands.command(name="set_tick", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def set_tick(self, ctx: commands.Context, seconds: int):
@@ -181,7 +363,7 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="recalc_today")
+    @commands.command(name="recalc_today", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def recalc_today(self, ctx: commands.Context):
@@ -205,7 +387,7 @@ class AdminCog(commands.Cog):
 
     # ---------- LOOP / TIME ----------
 
-    @commands.command(name="tick_status")
+    @commands.command(name="tick_status", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def tick_status(self, ctx: commands.Context):
@@ -222,7 +404,7 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="day_key")
+    @commands.command(name="day_key", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def day_key_cmd(self, ctx: commands.Context):
@@ -248,7 +430,7 @@ class AdminCog(commands.Cog):
 
     # ---------- DB HEALTH ----------
 
-    @commands.command(name="db_counts")
+    @commands.command(name="db_counts", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def db_counts(self, ctx: commands.Context):
@@ -271,20 +453,10 @@ class AdminCog(commands.Cog):
     # ✅ TEST / DEV COMMANDS (dangerous) — use for debugging only
     # ============================================================
 
-    async def _today_key(self, guild_id: int, now: int) -> int:
-        cfg = await self.repos.get_effective_config(guild_id, self.settings)
-        return day_key_from_utc_ts(now, str(cfg["default_tz"]), int(cfg["grace_hour_local"]))
-
-    @commands.command(name="test_add_today")
+    @commands.command(name="test_add_today", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_add_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
-        """
-        TEST: adds overlap seconds to TODAY for a duo.
-        Usage:
-          !test_add_today @a @b 60
-          !test_add_today @a @b 3m
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available.")
@@ -303,16 +475,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_set_today")
+    @commands.command(name="test_set_today", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_set_today(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, amount: str):
-        """
-        TEST: sets TODAY overlap seconds exactly.
-        Usage:
-          !test_set_today @a @b 300
-          !test_set_today @a @b 10m
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available.")
@@ -342,15 +508,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_set_day")
+    @commands.command(name="test_set_day", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_set_day(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member, day_key: int, amount: str):
-        """
-        TEST: sets overlap seconds for a specific day_key (date.toordinal()).
-        Usage:
-          !test_set_day @a @b 739300 600
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available.")
@@ -379,7 +540,7 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_set_streak")
+    @commands.command(name="test_set_streak", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_set_streak(
@@ -391,11 +552,6 @@ class AdminCog(commands.Cog):
         longest_streak: int,
         last_completed_day_key: int,
     ):
-        """
-        TEST: force-set streak row values.
-        Usage:
-          !test_set_streak @a @b 5 12 739300
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available.")
@@ -430,15 +586,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_clear_duo")
+    @commands.command(name="test_clear_duo", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_clear_duo(self, ctx: commands.Context, user_a: discord.Member, user_b: discord.Member):
-        """
-        TEST: deletes a specific duo and all its rows.
-        Usage:
-          !test_clear_duo @a @b
-        """
         try:
             if not self._require_repos():
                 return await ctx.reply("repos not available.")
@@ -468,15 +619,10 @@ class AdminCog(commands.Cog):
         except Exception:
             return False
 
-    @commands.command(name="test_dm_restore")
+    @commands.command(name="test_dm_restore", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_dm_restore(self, ctx: commands.Context, member: discord.Member):
-        """
-        TEST: sends a restore-available DM (white_fire) as an embed.
-        Usage:
-          !test_dm_restore @user
-        """
         try:
             embed = discord.Embed(
                 title=f"{emoji('white_fire')} Streak Restore Available",
@@ -490,15 +636,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_dm_ice")
+    @commands.command(name="test_dm_ice", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_dm_ice(self, ctx: commands.Context, member: discord.Member):
-        """
-        TEST: sends a restore-expired DM (ice) as an embed.
-        Usage:
-          !test_dm_ice @user
-        """
         try:
             embed = discord.Embed(
                 title=f"{emoji('ice')} Streak Lost",
@@ -511,15 +652,10 @@ class AdminCog(commands.Cog):
         except Exception as err:
             await self._fail(ctx, err)
 
-    @commands.command(name="test_dm_text")
+    @commands.command(name="test_dm_text", hidden=True)
     @commands.guild_only()
     @admin_or_owner()
     async def test_dm_text(self, ctx: commands.Context, member: discord.Member, *, message: str):
-        """
-        TEST: send a custom DM message (plain text).
-        Usage:
-          !test_dm_text @user hello there
-        """
         try:
             try:
                 await member.send(f"(test DM) {message}")

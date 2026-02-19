@@ -11,10 +11,6 @@ except Exception:
 
 
 def _get_prefix_from_bot(bot) -> str:
-    """
-    Best-effort prefix detection.
-    Works for your dev/prod prefix string setup.
-    """
     try:
         p = getattr(bot, "command_prefix", None)
         if isinstance(p, str) and p.strip():
@@ -25,10 +21,6 @@ def _get_prefix_from_bot(bot) -> str:
 
 
 def _guild_emoji(guild: discord.Guild | None, *names: str) -> str | None:
-    """
-    Find a custom emoji by name in the server.
-    Returns string like '<:name:id>' if found.
-    """
     if guild is None:
         return None
     lname = {n.lower() for n in names if isinstance(n, str) and n.strip()}
@@ -39,12 +31,6 @@ def _guild_emoji(guild: discord.Guild | None, *names: str) -> str | None:
 
 
 def _emoji(guild: discord.Guild | None, key: str, default: str) -> str:
-    """
-    Emoji priority:
-    1) server emoji by name (key)
-    2) your config emoji mapping e(key) if available
-    3) default unicode
-    """
     found = _guild_emoji(guild, key)
     if found:
         return found
@@ -61,9 +47,6 @@ def _emoji(guild: discord.Guild | None, key: str, default: str) -> str:
 
 
 def streak_help_embed(ctx) -> discord.Embed:
-    """
-    Clean, user-friendly help embed for streak command.
-    """
     prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
     guild = getattr(ctx, "guild", None)
 
@@ -129,9 +112,6 @@ def streak_help_embed(ctx) -> discord.Embed:
 
 
 def leaderboard_help_embed(ctx) -> discord.Embed:
-    """
-    Clean, user-friendly help embed for leaderboard command.
-    """
     prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
     guild = getattr(ctx, "guild", None)
 
@@ -191,4 +171,73 @@ def leaderboard_help_embed(ctx) -> discord.Embed:
     )
 
     embed.set_footer(text=f"Tip: Use {prefix}lb help anytime. (Legacy cmds still work: {prefix}streaklb / {prefix}cslb)")
+    return embed
+
+
+def admin_help_embed(ctx) -> discord.Embed:
+    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
+    guild = getattr(ctx, "guild", None)
+
+    shield = _emoji(guild, "shield", "🛡️")
+    gear = _emoji(guild, "gear", "⚙️")
+    db = _emoji(guild, "database", "🗄️")
+    clock = _emoji(guild, "clock", "⏱️")
+    test = _emoji(guild, "test", "🧪")
+    warn = _emoji(guild, "warning", "⚠️")
+
+    embed = discord.Embed(
+        title=f"{shield} Ignio Admin",
+        description="Admin-only utilities. Use the hub command so the bot stays easy to manage.",
+    )
+
+    embed.add_field(
+        name=f"{gear} Config",
+        value=(
+            f"`{prefix}admin config` → show live effective config\n"
+            f"`{prefix}admin set min 3m` → set min overlap (supports `180`, `3m`, `2h`)\n"
+            f"`{prefix}admin set tick 15` → set tick seconds\n"
+            f"`{prefix}admin recalc today` → recalc today totals using current config"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{clock} Loop / time",
+        value=(
+            f"`{prefix}admin tick status` → tick loop running?\n"
+            f"`{prefix}admin daykey` → debug day key / timezone"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{db} DB",
+        value=f"`{prefix}admin db counts` → rows/duos counts for this server",
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{test} Tests (dangerous)",
+        value=(
+            f"{warn} These change data.\n"
+            f"`{prefix}admin test add_today @a @b 3m`\n"
+            f"`{prefix}admin test set_today @a @b 10m`\n"
+            f"`{prefix}admin test set_day @a @b <day_key> 10m`\n"
+            f"`{prefix}admin test set_streak @a @b <cur> <best> <last_day_key>`\n"
+            f"`{prefix}admin test clear_duo @a @b`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="DM tests",
+        value=(
+            f"`{prefix}admin dm restore @user`\n"
+            f"`{prefix}admin dm ice @user`\n"
+            f"`{prefix}admin dm text @user <message>`"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text=f"Tip: {prefix}admin help  • legacy commands still work but are hidden")
     return embed
