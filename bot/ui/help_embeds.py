@@ -4,7 +4,6 @@ from __future__ import annotations
 import discord
 
 try:
-    # your config has EMOJIS + e()
     from bot.config import e as cfg_emoji
 except Exception:
     cfg_emoji = None
@@ -240,4 +239,97 @@ def admin_help_embed(ctx) -> discord.Embed:
     )
 
     embed.set_footer(text=f"Tip: {prefix}admin help  • legacy commands still work but are hidden")
+    return embed
+
+
+def user_settings_help_embed(ctx) -> discord.Embed:
+    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
+    guild = getattr(ctx, "guild", None)
+
+    gear = _emoji(guild, "gear", "⚙️")
+    lock = _emoji(guild, "lock", "🔒")
+    mail = _emoji(guild, "mail", "📩")
+    warn = _emoji(guild, "warning", "⚠️")
+    ice = _emoji(guild, "ice", "🧊")
+    fire = _emoji(guild, "white_fire", "🔥")
+
+    embed = discord.Embed(
+        title=f"{gear} Ignio Settings",
+        description="Your personal preferences for this server.",
+    )
+
+    embed.add_field(
+        name="Main command",
+        value=(
+            f"`{prefix}settings` → show your current settings\n"
+            f"`{prefix}settings help` → show this menu\n"
+            f"`{prefix}settings privacy on/off` → make your duos private/public\n"
+            f"`{prefix}settings dm on/off` → DM reminders before day ends\n"
+            f"`{prefix}settings lost on/off` → notify when your streak is lost\n"
+            f"`{prefix}settings dmice on/off` → notify when restore expires (ice)\n"
+            f"`{prefix}settings dmrestore on/off` → notify when restore is available"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Examples",
+        value=(
+            f"`{prefix}settings`\n"
+            f"`{prefix}settings privacy on`\n"
+            f"`{prefix}settings dm off`\n"
+            f"`{prefix}settings lost on`\n"
+            f"`{prefix}settings dmice off`\n"
+            f"`{prefix}settings dmrestore on`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{lock} Privacy",
+        value="If either duo member turns privacy on, that duo becomes private (leaderboards hide it too).",
+        inline=False,
+    )
+
+    embed.add_field(
+        name=f"{mail} DM notifications",
+        value=(
+            f"{mail} **Reminders** = “you’re about to miss today”\n"
+            f"{warn} **Lost** = “your streak ended”\n"
+            f"{fire} **Restore** = “you can still restore it”\n"
+            f"{ice} **Ice** = “restore window expired”"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text=f"Legacy still works: {prefix}dmend (same as {prefix}settings lost), {prefix}privacy, {prefix}dm, {prefix}dmice")
+    return embed
+
+
+def user_settings_status_embed(ctx, *, privacy: bool, dm: bool, dm_lost: bool, dm_restore: bool, dm_ice: bool) -> discord.Embed:
+    prefix = _get_prefix_from_bot(getattr(ctx, "bot", None))
+    guild = getattr(ctx, "guild", None)
+
+    gear = _emoji(guild, "gear", "⚙️")
+    lock = _emoji(guild, "lock", "🔒")
+    mail = _emoji(guild, "mail", "📩")
+    warn = _emoji(guild, "warning", "⚠️")
+    ice = _emoji(guild, "ice", "🧊")
+    fire = _emoji(guild, "white_fire", "🔥")
+
+    def onoff(b: bool) -> str:
+        return "ON" if b else "OFF"
+
+    embed = discord.Embed(
+        title=f"{gear} Your Ignio Settings",
+        description="These settings only affect you (in this server).",
+    )
+
+    embed.add_field(name=f"{lock} Privacy", value=f"`{onoff(privacy)}`", inline=True)
+    embed.add_field(name=f"{mail} DM reminders", value=f"`{onoff(dm)}`", inline=True)
+    embed.add_field(name=f"{warn} Streak lost alerts", value=f"`{onoff(dm_lost)}`", inline=True)
+    embed.add_field(name=f"{fire} Restore alerts", value=f"`{onoff(dm_restore)}`", inline=True)
+    embed.add_field(name=f"{ice} Ice alerts", value=f"`{onoff(dm_ice)}`", inline=True)
+
+    embed.set_footer(text=f"Change: {prefix}settings help")
     return embed

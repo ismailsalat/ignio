@@ -5,9 +5,10 @@ import discord
 from discord.ext import commands
 
 from bot.core.timecore import now_utc_ts
+from bot.ui.help_embeds import user_settings_help_embed, user_settings_status_embed
 
 
-def _onoff(s: str) -> str:
+def _onoff01(s: str) -> str:
     return "ON" if s == "1" else "OFF"
 
 
@@ -22,6 +23,8 @@ class UserSettingsCog(commands.Cog):
         self.bot = bot
         self.settings = settings
         self.repos = repos
+
+    # ---------------- internal db helpers ----------------
 
     async def _set_user_key(self, guild_id: int, user_id: int, key: str, value01: str, now_ts: int) -> None:
         conn = await self.repos.raw_conn(guild_id)
@@ -54,182 +57,202 @@ class UserSettingsCog(commands.Cog):
     def _parse_mode(self, mode: str) -> str:
         return (mode or "").strip().lower()
 
-    # ------------------ SHOW ALL ------------------
+    async def _get_defaults(self, gid: int) -> dict:
+        cfg = await self.repos.get_effective_config(gid, self.settings)
+        return {
+            "privacy_default_private": bool(cfg.get("privacy_default_private", False)),
+            "dm_reminders_enabled": bool(cfg.get("dm_reminders_enabled", True)),
+            "dm_streak_end_enabled": bool(cfg.get("dm_streak_end_enabled", True)),
+            "dm_streak_end_ice_enabled": bool(cfg.get("dm_streak_end_ice_enabled", True)),
+            "dm_streak_end_restore_enabled": bool(cfg.get("dm_streak_end_restore_enabled", True)),
+        }
 
-    @commands.command(name="settings")
-    @commands.guild_only()
-    async def settings_cmd(self, ctx: commands.Context):
-        """
-        Shows your effective user settings (defaults + your overrides).
-        """
+    async def _show_settings_embed(self, ctx: commands.Context):
         gid = ctx.guild.id
         uid = ctx.author.id
 
-        cfg = await self.repos.get_effective_config(gid, self.settings)
+        defaults = await self._get_defaults(gid)
 
-        # defaults from config (Settings) via effective config
-        default_private = bool(cfg.get("privacy_default_private", False))
-        default_dm = bool(cfg.get("dm_reminders_enabled", True))
-        default_end = bool(cfg.get("dm_streak_end_enabled", True))
-        default_ice = bool(cfg.get("dm_streak_end_ice_enabled", True))
-        default_restore = bool(cfg.get("dm_streak_end_restore_enabled", True))
+        privacy = await self._get_user_bool_effective(gid, uid, "privacy_private", defaults["privacy_default_private"])
+        dm = await self._get_user_bool_effective(gid, uid, "dm_reminders_enabled", defaults["dm_reminders_enabled"])
 
-        # effective user values (override if exists)
-        privacy = await self._get_user_bool_effective(gid, uid, "privacy_private", default_private)
-        dm = await self._get_user_bool_effective(gid, uid, "dm_reminders_enabled", default_dm)
-        dm_end = await self._get_user_bool_effective(gid, uid, "dm_streak_end_enabled", default_end)
-        dm_restore = await self._get_user_bool_effective(gid, uid, "dm_streak_end_restore_enabled", default_restore)
-        dm_ice = await self._get_user_bool_effective(gid, uid, "dm_streak_end_ice_enabled", default_ice)
+        # "lost alerts" is the same underlying key as dm_streak_end_enabled (legacy dmend)
+        dm_lost = await self._get_user_bool_effective(gid, uid, "dm_streak_end_enabled", defaults["dm_streak_end_enabled"])
 
-        msg = (
-            "**Your Ignio Settings**\n"
-            f"- Privacy: `{'ON' if privacy else 'OFF'}`\n"
-            f"- DM reminders: `{'ON' if dm else 'OFF'}`\n"
-            f"- DM streak ended: `{'ON' if dm_end else 'OFF'}`\n"
-            f"- DM restore msg (white fire): `{'ON' if dm_restore else 'OFF'}`\n"
-            f"- DM ice msg: `{'ON' if dm_ice else 'OFF'}`\n"
-            "\n"
-            "Change:\n"
-            "- `!privacy on/off`\n"
-            "- `!dm on/off`\n"
-            "- `!dmend on/off`\n"
-            "- `!dmice on/off`\n"
+        dm_restore = await self._get_user_bool_effective(
+            gid, uid, "dm_streak_end_restore_enabled", defaults["dm_streak_end_restore_enabled"]
         )
-        await ctx.reply(msg)
+        dm_ice = await self._get_user_bool_effective(gid, uid, "dm_streak_end_ice_enabled", defaults["dm_streak_end_ice_enabled"])
 
-    # ------------------ PRIVACY ------------------
+        return await ctx.reply(
+            embed=user_settings_status_embed(
+                ctx,
+                privacy=privacy,
+                dm=dm,
+                dm_lost=dm_lost,
+                dm_restore=dm_restore,
+                dm_ice=dm_ice,
+            )
+        )
 
-    @commands.command(name="privacy")
+    async def _toggle_bool(
+        self,
+        ctx: commands.Context,
+        *,
+        key: str,
+        default_bool: bool,
+        mode: str,
+        label_onoff: str,
+        on_msg: str,
+        off_msg: str,
+        status_msg_prefix: str,
+    ):
+        gid = ctx.guild.id
+        uid = ctx.author.id
+        now = now_utc_ts()
+        mode = self._parse_mode(mode)
+
+        if mode in ("", "status", "show"):
+            v = await self._get_user_key(gid, uid, key)
+            eff = default_bool if v is None else (v == "1")
+            return await ctx.reply(f"{status_msg_prefix} **{_onoff01('1' if eff else '0')}** for you.")
+
+        if mode in ("on", "enable", "1", "true"):
+            await self._set_user_key(gid, uid, key, "1", now)
+            return await ctx.reply(on_msg)
+
+        if mode in ("off", "disable", "0", "false"):
+            await self._set_user_key(gid, uid, key, "0", now)
+            return await ctx.reply(off_msg)
+
+        # invalid -> help embed
+        return await ctx.reply(embed=user_settings_help_embed(ctx))
+
+    # ============================================================
+    # ✅ New hub command (streak-style)
+    # ============================================================
+
+    @commands.group(name="settings", invoke_without_command=True)
+    @commands.guild_only()
+    async def settings_group(self, ctx: commands.Context):
+        # `!settings` -> show status embed
+        return await self._show_settings_embed(ctx)
+
+    @settings_group.command(name="help")
+    @commands.guild_only()
+    async def settings_help(self, ctx: commands.Context):
+        return await ctx.reply(embed=user_settings_help_embed(ctx))
+
+    @settings_group.command(name="privacy")
+    @commands.guild_only()
+    async def settings_privacy(self, ctx: commands.Context, mode: str = ""):
+        gid = ctx.guild.id
+        defaults = await self._get_defaults(gid)
+        return await self._toggle_bool(
+            ctx,
+            key="privacy_private",
+            default_bool=defaults["privacy_default_private"],
+            mode=mode,
+            label_onoff="🔒 Privacy",
+            status_msg_prefix="🔒 Privacy is",
+            on_msg="🔒 Privacy **ON**. Your duos will be private if either person enables privacy.",
+            off_msg="✅ Privacy **OFF**. Your duos can show normally.",
+        )
+
+    @settings_group.command(name="dm")
+    @commands.guild_only()
+    async def settings_dm(self, ctx: commands.Context, mode: str = ""):
+        gid = ctx.guild.id
+        defaults = await self._get_defaults(gid)
+        return await self._toggle_bool(
+            ctx,
+            key="dm_reminders_enabled",
+            default_bool=defaults["dm_reminders_enabled"],
+            mode=mode,
+            label_onoff="📩 DM reminders",
+            status_msg_prefix="📩 DM reminders are",
+            on_msg="📩 DM reminders **ON**. You’ll get a heads-up before the day ends.",
+            off_msg="📩 DM reminders **OFF**.",
+        )
+
+    # ✅ NEW clean name (user-facing): `lost`
+    # This maps to the legacy key dm_streak_end_enabled (old command dmend)
+    @settings_group.command(name="lost")
+    @commands.guild_only()
+    async def settings_lost(self, ctx: commands.Context, mode: str = ""):
+        gid = ctx.guild.id
+        defaults = await self._get_defaults(gid)
+        return await self._toggle_bool(
+            ctx,
+            key="dm_streak_end_enabled",
+            default_bool=defaults["dm_streak_end_enabled"],
+            mode=mode,
+            label_onoff="⚠️ Streak lost alerts",
+            status_msg_prefix="⚠️ Streak lost alerts are",
+            on_msg="⚠️ **ON**. I’ll DM you when your streak is lost.",
+            off_msg="⚠️ **OFF**. I won’t DM you when your streak is lost.",
+        )
+
+    # Legacy-friendly: keep `dmend` under settings too
+    @settings_group.command(name="dmend")
+    @commands.guild_only()
+    async def settings_dmend(self, ctx: commands.Context, mode: str = ""):
+        # redirect to the clean name
+        return await self.settings_lost(ctx, mode)
+
+    @settings_group.command(name="dmice")
+    @commands.guild_only()
+    async def settings_dmice(self, ctx: commands.Context, mode: str = ""):
+        gid = ctx.guild.id
+        defaults = await self._get_defaults(gid)
+        return await self._toggle_bool(
+            ctx,
+            key="dm_streak_end_ice_enabled",
+            default_bool=defaults["dm_streak_end_ice_enabled"],
+            mode=mode,
+            label_onoff="🧊 Ice alerts",
+            status_msg_prefix="🧊 Ice alerts are",
+            on_msg="🧊 **ON**. I’ll DM you when the restore window expires.",
+            off_msg="🧊 **OFF**.",
+        )
+
+    @settings_group.command(name="dmrestore")
+    @commands.guild_only()
+    async def settings_dmrestore(self, ctx: commands.Context, mode: str = ""):
+        gid = ctx.guild.id
+        defaults = await self._get_defaults(gid)
+        return await self._toggle_bool(
+            ctx,
+            key="dm_streak_end_restore_enabled",
+            default_bool=defaults["dm_streak_end_restore_enabled"],
+            mode=mode,
+            label_onoff="🔥 Restore alerts",
+            status_msg_prefix="🔥 Restore alerts are",
+            on_msg="🔥 **ON**. I’ll DM you when a streak can still be restored.",
+            off_msg="🔥 **OFF**.",
+        )
+
+    # ============================================================
+    # ✅ Legacy commands kept (hidden) — nothing removed
+    # ============================================================
+
+    @commands.command(name="privacy", hidden=True)
     @commands.guild_only()
     async def privacy(self, ctx: commands.Context, mode: str = ""):
-        """
-        Usage:
-          !privacy
-          !privacy on
-          !privacy off
-        """
-        gid = ctx.guild.id
-        uid = ctx.author.id
-        now = now_utc_ts()
+        return await self.settings_privacy(ctx, mode)
 
-        cfg = await self.repos.get_effective_config(gid, self.settings)
-        default_private = bool(cfg.get("privacy_default_private", False))
-
-        mode = self._parse_mode(mode)
-        if mode in ("", "status", "show"):
-            v = await self._get_user_key(gid, uid, "privacy_private")
-            eff = default_private if v is None else (v == "1")
-            return await ctx.reply(f"🔒 Privacy is **{_onoff('1' if eff else '0')}** for you.")
-
-        if mode in ("on", "enable", "1", "true"):
-            await self._set_user_key(gid, uid, "privacy_private", "1", now)
-            return await ctx.reply("🔒 Privacy **ON**. If either duo member has privacy on, the duo is private.")
-
-        if mode in ("off", "disable", "0", "false"):
-            await self._set_user_key(gid, uid, "privacy_private", "0", now)
-            return await ctx.reply("✅ Privacy **OFF**. Your duos can show normally.")
-
-        await ctx.reply("Use: `!privacy` | `!privacy on` | `!privacy off`")
-
-    # ------------------ DM REMINDERS ------------------
-
-    @commands.command(name="dm")
+    @commands.command(name="dm", hidden=True)
     @commands.guild_only()
     async def dm_reminders(self, ctx: commands.Context, mode: str = ""):
-        """
-        Usage:
-          !dm
-          !dm on
-          !dm off
-        Toggles DM reminders (before day closes).
-        """
-        gid = ctx.guild.id
-        uid = ctx.author.id
-        now = now_utc_ts()
+        return await self.settings_dm(ctx, mode)
 
-        cfg = await self.repos.get_effective_config(gid, self.settings)
-        default_dm = bool(cfg.get("dm_reminders_enabled", True))
-
-        mode = self._parse_mode(mode)
-        if mode in ("", "status", "show"):
-            v = await self._get_user_key(gid, uid, "dm_reminders_enabled")
-            eff = default_dm if v is None else (v == "1")
-            return await ctx.reply(f"📩 DM reminders are **{_onoff('1' if eff else '0')}** for you.")
-
-        if mode in ("on", "enable", "1", "true"):
-            await self._set_user_key(gid, uid, "dm_reminders_enabled", "1", now)
-            return await ctx.reply("📩 DM reminders **ON**.")
-
-        if mode in ("off", "disable", "0", "false"):
-            await self._set_user_key(gid, uid, "dm_reminders_enabled", "0", now)
-            return await ctx.reply("📩 DM reminders **OFF**.")
-
-        await ctx.reply("Use: `!dm` | `!dm on` | `!dm off`")
-
-    # ------------------ DM STREAK END ------------------
-
-    @commands.command(name="dmend")
+    # legacy name still works
+    @commands.command(name="dmend", hidden=True)
     @commands.guild_only()
     async def dm_end(self, ctx: commands.Context, mode: str = ""):
-        """
-        Usage:
-          !dmend
-          !dmend on
-          !dmend off
-        Toggles DM message when a streak ends.
-        """
-        gid = ctx.guild.id
-        uid = ctx.author.id
-        now = now_utc_ts()
+        return await self.settings_lost(ctx, mode)
 
-        cfg = await self.repos.get_effective_config(gid, self.settings)
-        default_end = bool(cfg.get("dm_streak_end_enabled", True))
-
-        mode = self._parse_mode(mode)
-        if mode in ("", "status", "show"):
-            v = await self._get_user_key(gid, uid, "dm_streak_end_enabled")
-            eff = default_end if v is None else (v == "1")
-            return await ctx.reply(f"⚠️ DM streak end is **{_onoff('1' if eff else '0')}** for you.")
-
-        if mode in ("on", "enable", "1", "true"):
-            await self._set_user_key(gid, uid, "dm_streak_end_enabled", "1", now)
-            return await ctx.reply("⚠️ DM streak end **ON**.")
-
-        if mode in ("off", "disable", "0", "false"):
-            await self._set_user_key(gid, uid, "dm_streak_end_enabled", "0", now)
-            return await ctx.reply("⚠️ DM streak end **OFF**.")
-
-        await ctx.reply("Use: `!dmend` | `!dmend on` | `!dmend off`")
-
-    @commands.command(name="dmice")
+    @commands.command(name="dmice", hidden=True)
     @commands.guild_only()
     async def dm_ice(self, ctx: commands.Context, mode: str = ""):
-        """
-        Usage:
-          !dmice
-          !dmice on
-          !dmice off
-        Toggles the "ice" DM after restore window is over.
-        """
-        gid = ctx.guild.id
-        uid = ctx.author.id
-        now = now_utc_ts()
-
-        cfg = await self.repos.get_effective_config(gid, self.settings)
-        default_ice = bool(cfg.get("dm_streak_end_ice_enabled", True))
-
-        mode = self._parse_mode(mode)
-        if mode in ("", "status", "show"):
-            v = await self._get_user_key(gid, uid, "dm_streak_end_ice_enabled")
-            eff = default_ice if v is None else (v == "1")
-            return await ctx.reply(f"🧊 DM ice msg is **{_onoff('1' if eff else '0')}** for you.")
-
-        if mode in ("on", "enable", "1", "true"):
-            await self._set_user_key(gid, uid, "dm_streak_end_ice_enabled", "1", now)
-            return await ctx.reply("🧊 DM ice msg **ON**.")
-
-        if mode in ("off", "disable", "0", "false"):
-            await self._set_user_key(gid, uid, "dm_streak_end_ice_enabled", "0", now)
-            return await ctx.reply("🧊 DM ice msg **OFF**.")
-
-        await ctx.reply("Use: `!dmice` | `!dmice on` | `!dmice off`")
+        return await self.settings_dmice(ctx, mode)
