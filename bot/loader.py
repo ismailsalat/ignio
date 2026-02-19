@@ -10,6 +10,9 @@ from bot.cogs.leaderboard import LeaderboardCog
 from bot.cogs.user_settings import UserSettingsCog
 from bot.cogs.errors import ErrorHandlerCog
 
+# ✅ NEW: meta/about command cog
+from bot.cogs.meta import MetaCog
+
 
 async def load_all(bot, settings, repos, vc_state=None):
     print("[Ignio] Starting loader...")
@@ -27,6 +30,15 @@ async def load_all(bot, settings, repos, vc_state=None):
     bot.vc_state = vc_state
 
     vc_cog = None
+
+    # ---------------- META / ABOUT ----------------
+    # Load this early so you can always run `!ignio` even if other cogs crash.
+    try:
+        await bot.add_cog(MetaCog(bot, settings))
+        print("[Ignio] ✅ MetaCog loaded")
+    except Exception:
+        print("[Ignio] ❌ MetaCog FAILED")
+        traceback.print_exc()
 
     # ---------------- VC TRACKER ----------------
     try:

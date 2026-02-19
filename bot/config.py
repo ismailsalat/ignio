@@ -85,6 +85,17 @@ class Settings:
     nickname_fire_suffix: str = " 🔥"
 
 
+    # ---------------- Meta / About ----------------
+    app_name: str = "Ignio"
+    version: str = "0.2.5"
+    support_server_name: str = "Ignio Support"
+    support_server_invite: str = "https://discord.gg/EUZWGfU3XF"   # put your Discord invite here later
+    main_server_name: str = "Nur"     # or whatever your main server is
+    main_server_id: int = 1440226442012262534           # optional: put guild id if you want
+    repo_url: str = ""               # optional: github repo link
+
+
+
 def load_settings() -> Settings:
     # ---------- Normal behavior ----------
     if load_dotenv is not None:
