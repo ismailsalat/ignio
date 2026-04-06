@@ -1,5 +1,3 @@
-# bot/cogs/vc_tracker.py
-
 from __future__ import annotations
 
 import time
@@ -13,45 +11,31 @@ from bot.core.streak_engine import compute_streak_transition
 
 class VcTrackerCog(commands.Cog):
     """
-    Duo-only VC tracker (exactly 2 humans) + Smart 🔥 nickname suffix.
+    Duo-only VC tracker + fire nickname sync.
 
-    Core:
-    - Ignores bots
-    - Counts overlap only when EXACTLY 2 real users are in the channel (after disconnect buffer)
-    - 1 user => ignore
-    - 3+ users => ignore (prevents pairwise farming)
-    - Bootstraps VC state on startup
-    - Disconnect buffer keeps effective duo for short reconnects
-
-    Fire Nicknames (smart):
-    - Adds suffix " 🔥" ONLY when duo is "qualified":
-        (today_total >= min_overlap_seconds) OR (current_streak > 0)
-    - Removes suffix immediately when duo breaks
-    - Stores original nick in memory for perfect restore
-    - Restart-safe fallback: if we don't know original, we strip suffix instead of guessing
-    - Rate-limit guard per user to avoid API spam
+    Fire rule:
+    - show fire only if the user is currently in a valid duo VC
+    - and that duo already has current_streak > 0
+    - do NOT show fire just because today's progress is close to the limit
     """
 
-    def __init__(self, bot: commands.Bot, settings, repos):
+    def __init__(self, bot: commands.Bot, settings, repos, vc_state: VcRuntimeState | None = None):
         self.bot = bot
         self.settings = settings
         self.repos = repos
-        self.state = VcRuntimeState()
+        self.state = vc_state or VcRuntimeState()
         self._bootstrapped = False
 
-        # 🔥 runtime memory (NOT DB)
-        self._fire_active: dict[int, set[int]] = {}  # guild_id -> users currently expected to have fire
-        self._fire_original_nick: dict[int, dict[int, str | None]] = {}  # guild_id -> user_id -> original nick
-
-        # rate-limit guard: don't attempt edit too frequently per user
-        self._nick_edit_last_ts: dict[tuple[int, int], float] = {}  # (guild_id, user_id) -> unix seconds
+        self._fire_active: dict[int, set[int]] = {}
+        self._fire_snapshot: dict[int, dict[int, dict[str, str | None]]] = {}
+        self._nick_edit_last_ts: dict[tuple[int, int], float] = {}
 
         self.tick.start()
 
     def cog_unload(self):
         self.tick.cancel()
 
-    # ---------------- fire nickname config ----------------
+    # ---------------- fire helpers ----------------
 
     def _fire_enabled(self) -> bool:
         return bool(getattr(self.settings, "nickname_fire_enabled", True))
@@ -60,17 +44,14 @@ class VcTrackerCog(commands.Cog):
         return str(getattr(self.settings, "nickname_fire_suffix", " 🔥"))
 
     def _nick_edit_min_interval(self) -> float:
-        # seconds between nickname edits per user (guard)
         return float(getattr(self.settings, "nickname_edit_min_interval_seconds", 20))
 
-    def _has_fire(self, nick: str | None) -> bool:
-        if not nick:
-            return False
-        return nick.endswith(self._fire_suffix())
+    def _has_fire_text(self, text: str | None) -> bool:
+        return bool(text and text.endswith(self._fire_suffix()))
 
-    def _strip_fire(self, nick: str) -> str:
-        suf = self._fire_suffix()
-        return nick[:-len(suf)] if nick.endswith(suf) else nick
+    def _strip_fire(self, text: str) -> str:
+        suffix = self._fire_suffix()
+        return text[:-len(suffix)] if text.endswith(suffix) else text
 
     def _can_try_edit_now(self, guild_id: int, user_id: int) -> bool:
         key = (guild_id, user_id)
@@ -80,9 +61,44 @@ class VcTrackerCog(commands.Cog):
     def _mark_edit_now(self, guild_id: int, user_id: int) -> None:
         self._nick_edit_last_ts[(guild_id, user_id)] = time.time()
 
+    def _remember_original_state(self, member: discord.Member) -> None:
+        guild_map = self._fire_snapshot.setdefault(member.guild.id, {})
+        if member.id in guild_map:
+            return
+
+        guild_map[member.id] = {
+            "orig_nick": member.nick,
+            "orig_display_name": member.display_name,
+        }
+
+    def _get_me(self, guild: discord.Guild) -> discord.Member | None:
+        me = guild.me
+        if me is not None:
+            return me
+        if self.bot.user is None:
+            return None
+        return guild.get_member(self.bot.user.id)
+
+    def _can_edit_member_nick(self, member: discord.Member) -> bool:
+        me = self._get_me(member.guild)
+        if me is None:
+            return False
+
+        if not me.guild_permissions.manage_nicknames:
+            return False
+
+        if member == member.guild.owner:
+            return False
+
+        if member.top_role >= me.top_role:
+            return False
+
+        return True
+
     async def _apply_fire(self, guild: discord.Guild, user_id: int) -> None:
         if not self._fire_enabled():
             return
+
         if not self._can_try_edit_now(guild.id, user_id):
             return
 
@@ -90,26 +106,25 @@ class VcTrackerCog(commands.Cog):
         if member is None or member.bot:
             return
 
-        # Already has fire? mark active and stop
-        if self._has_fire(member.nick):
+        if not self._can_edit_member_nick(member):
+            return
+
+        if self._has_fire_text(member.display_name):
             self._fire_active.setdefault(guild.id, set()).add(user_id)
             return
 
-        # Save original nick exactly once
-        self._fire_original_nick.setdefault(guild.id, {}).setdefault(user_id, member.nick)
+        self._remember_original_state(member)
 
-        base = member.nick if member.nick else member.name
-        base = self._strip_fire(base)
+        base = self._strip_fire(member.nick if member.nick is not None else member.display_name)
         new_nick = base + self._fire_suffix()
 
-        # If nickname already equals new_nick, no edit needed
         if member.nick == new_nick:
             self._fire_active.setdefault(guild.id, set()).add(user_id)
             return
 
         try:
             self._mark_edit_now(guild.id, user_id)
-            await member.edit(nick=new_nick, reason="Ignio: duo qualified (fire)")
+            await member.edit(nick=new_nick, reason="Ignio: active streak")
             self._fire_active.setdefault(guild.id, set()).add(user_id)
         except (discord.Forbidden, discord.HTTPException):
             return
@@ -117,6 +132,7 @@ class VcTrackerCog(commands.Cog):
     async def _remove_fire(self, guild: discord.Guild, user_id: int) -> None:
         if not self._fire_enabled():
             return
+
         if not self._can_try_edit_now(guild.id, user_id):
             return
 
@@ -124,35 +140,39 @@ class VcTrackerCog(commands.Cog):
         if member is None or member.bot:
             return
 
-        # Prefer perfect restore if we have it
-        orig = self._fire_original_nick.get(guild.id, {}).get(user_id, None)
-
-        # Restart-safe fallback: if we don't have orig, strip suffix if present
-        if orig is None:
-            if member.nick is None:
-                # no nick to strip; nothing to do
-                self._fire_active.get(guild.id, set()).discard(user_id)
-                return
-            desired = self._strip_fire(member.nick)
-        else:
-            desired = orig  # can be None
-
-        # If already correct, just clean memory
-        if member.nick == desired:
-            self._fire_active.get(guild.id, set()).discard(user_id)
-            if guild.id in self._fire_original_nick:
-                self._fire_original_nick[guild.id].pop(user_id, None)
+        if not self._can_edit_member_nick(member):
             return
 
+        snap = self._fire_snapshot.get(guild.id, {}).get(user_id)
+
+        if snap is None:
+            if member.nick is None:
+                self._fire_active.get(guild.id, set()).discard(user_id)
+                return
+            desired_nick = self._strip_fire(member.nick)
+        else:
+            orig_nick = snap.get("orig_nick")
+            orig_display_name = str(snap.get("orig_display_name") or "")
+
+            if orig_nick is not None:
+                desired_nick = orig_nick
+            else:
+                current_base = self._strip_fire(member.display_name)
+                if current_base == orig_display_name:
+                    desired_nick = None
+                else:
+                    desired_nick = orig_display_name
+
         try:
-            self._mark_edit_now(guild.id, user_id)
-            await member.edit(nick=desired, reason="Ignio: duo ended (remove fire)")
+            if member.nick != desired_nick:
+                self._mark_edit_now(guild.id, user_id)
+                await member.edit(nick=desired_nick, reason="Ignio: streak fire removed")
         except (discord.Forbidden, discord.HTTPException):
             return
         finally:
             self._fire_active.get(guild.id, set()).discard(user_id)
-            if guild.id in self._fire_original_nick:
-                self._fire_original_nick[guild.id].pop(user_id, None)
+            if guild.id in self._fire_snapshot:
+                self._fire_snapshot[guild.id].pop(user_id, None)
 
     async def _sync_fire_for_guild(self, guild_id: int, desired_users: set[int]) -> None:
         if not self._fire_enabled():
@@ -164,45 +184,43 @@ class VcTrackerCog(commands.Cog):
 
         active = self._fire_active.setdefault(guild_id, set())
 
-        # Add fire to those who should have it
-        for uid in (desired_users - active):
-            await self._apply_fire(guild, uid)
+        for user_id in (desired_users - active):
+            await self._apply_fire(guild, user_id)
 
-        # Remove fire from those who should not have it
-        for uid in list(active - desired_users):
-            await self._remove_fire(guild, uid)
+        for user_id in list(active - desired_users):
+            await self._remove_fire(guild, user_id)
 
     # ---------------- bootstrap ----------------
 
-    async def bootstrap_voice_state(self):
-        total_channels = 0
-        total_tracked = 0
+    async def bootstrap_voice_state(self) -> None:
+        if self._bootstrapped:
+            return
+
+        ignore_afk = bool(getattr(self.settings, "ignore_afk_channels", False))
+        afk_ids = set(getattr(self.settings, "afk_channel_ids", ()))
 
         for guild in self.bot.guilds:
             gid = guild.id
-            for ch in guild.voice_channels:
-                total_channels += 1
 
-                if self.settings.ignore_afk_channels and ch.id in self.settings.afk_channel_ids:
-                    if gid in self.state.channel_members:
-                        self.state.channel_members[gid].pop(ch.id, None)
+            for ch in guild.voice_channels:
+                if ignore_afk and ch.id in afk_ids:
+                    self.state.remove_channel(gid, ch.id)
                     continue
 
                 members = {m.id for m in ch.members if not m.bot}
                 if members:
                     self.state.set_channel_members(gid, ch.id, members)
-                    total_tracked += 1
                 else:
                     self.state.remove_channel(gid, ch.id)
 
         self._bootstrapped = True
-        print(f"[Ignio] VC bootstrap ✅ channels={total_channels} tracked={total_tracked}")
+        print("[Ignio] VC bootstrap done")
 
     @commands.Cog.listener()
     async def on_ready(self):
         await self.bootstrap_voice_state()
 
-    # ---------------- voice state updates ----------------
+    # ---------------- voice updates ----------------
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -223,10 +241,14 @@ class VcTrackerCog(commands.Cog):
         if after.channel is not None:
             self.state.clear_left(guild_id, member.id)
 
+        ignore_afk = bool(getattr(self.settings, "ignore_afk_channels", False))
+        afk_ids = set(getattr(self.settings, "afk_channel_ids", ()))
+
         for ch in (before.channel, after.channel):
             if ch is None:
                 continue
-            if self.settings.ignore_afk_channels and ch.id in self.settings.afk_channel_ids:
+
+            if ignore_afk and ch.id in afk_ids:
                 continue
 
             humans = {m.id for m in ch.members if not m.bot}
@@ -259,6 +281,59 @@ class VcTrackerCog(commands.Cog):
 
         return effective
 
+    # ---------------- fire state ----------------
+
+    async def _duo_has_active_streak(self, guild_id: int, user_a: int, user_b: int) -> bool:
+        streak = await self.repos.get_streak_by_member_hash(
+            guild_id=guild_id,
+            member_ids=[user_a, user_b],
+            only_active=True,
+        )
+        if streak is None:
+            return False
+
+        state = await self.repos.get_streak_state(int(streak["streak_id"]))
+        if state is None:
+            return False
+
+        return int(state["current_streak"]) > 0
+
+    async def _get_desired_fire_users_for_guild(self, guild_id: int) -> set[int]:
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+        disconnect_buf = int(cfg.get("disconnect_buffer_seconds", self.settings.disconnect_buffer_seconds))
+        ignore_afk = bool(cfg.get("ignore_afk_channels", 0))
+        afk_ids = set(getattr(self.settings, "afk_channel_ids", ()))
+        now_ts = now_utc_ts()
+
+        channels = self.state.channel_members.get(guild_id, {})
+        result: set[int] = set()
+
+        for channel_id, members in list(channels.items()):
+            if ignore_afk and channel_id in afk_ids:
+                continue
+
+            if not members:
+                continue
+
+            effective = self._compute_effective_members(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                now_ts=now_ts,
+                base_members=set(members),
+                disconnect_buffer_seconds=disconnect_buf,
+            )
+
+            if len(effective) != 2:
+                continue
+
+            user_a, user_b = sorted(effective)
+
+            if await self._duo_has_active_streak(guild_id, user_a, user_b):
+                result.add(user_a)
+                result.add(user_b)
+
+        return result
+
     # ---------------- tick loop ----------------
 
     @tasks.loop(seconds=15)
@@ -267,12 +342,9 @@ class VcTrackerCog(commands.Cog):
             return
 
         now_ts = now_utc_ts()
-
-        # who should have 🔥 right now (per guild)
-        desired_fire: dict[int, set[int]] = {}
+        guild_ids_seen = set(self.state.channel_members.keys())
 
         for guild_id, channels in list(self.state.channel_members.items()):
-            # use DB-effective config so changes apply live
             cfg = await self.repos.get_effective_config(guild_id, self.settings)
 
             default_tz = str(cfg.get("default_tz", self.settings.default_tz))
@@ -280,44 +352,48 @@ class VcTrackerCog(commands.Cog):
             tick_seconds = int(cfg.get("tick_seconds", self.settings.tick_seconds))
             min_required = int(cfg.get("min_overlap_seconds", self.settings.min_overlap_seconds))
             disconnect_buf = int(cfg.get("disconnect_buffer_seconds", self.settings.disconnect_buffer_seconds))
+            ignore_afk = bool(cfg.get("ignore_afk_channels", 0))
+            daily_cap_seconds = int(cfg.get("daily_cap_seconds", getattr(self.settings, "daily_cap_seconds", 0)))
 
+            afk_ids = set(getattr(self.settings, "afk_channel_ids", ()))
             day_key = day_key_from_utc_ts(now_ts, default_tz, grace_hour)
 
             for channel_id, members in list(channels.items()):
-                if self.settings.ignore_afk_channels and channel_id in self.settings.afk_channel_ids:
+                if ignore_afk and channel_id in afk_ids:
                     continue
 
-                base = set(members)
-                if not base:
+                if not members:
                     continue
 
                 effective = self._compute_effective_members(
-                    guild_id, channel_id, now_ts, base, disconnect_buf
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    now_ts=now_ts,
+                    base_members=set(members),
+                    disconnect_buffer_seconds=disconnect_buf,
                 )
 
-                # ✅ DUO ONLY
                 if len(effective) != 2:
                     continue
 
-                a, b = sorted(effective)
+                user_a, user_b = sorted(effective)
 
-                duo_id, today_total, current_streak = await self._apply_overlap_tick(
+                await self._apply_overlap_tick(
                     guild_id=guild_id,
-                    user_a=a,
-                    user_b=b,
+                    user_a=user_a,
+                    user_b=user_b,
                     day_key=day_key,
                     now_ts=now_ts,
                     tick_seconds=tick_seconds,
                     min_required_seconds=min_required,
+                    daily_cap_seconds=daily_cap_seconds,
                 )
 
-                # 🔥 qualify rule (your request)
-                if today_total >= min_required or current_streak > 0:
-                    desired_fire.setdefault(guild_id, set()).update({a, b})
+        guild_ids_to_sync = guild_ids_seen | set(self._fire_active.keys()) | {g.id for g in self.bot.guilds}
 
-        # sync nicknames per guild: only edits on state changes
-        for gid in list(self.state.channel_members.keys()):
-            await self._sync_fire_for_guild(gid, desired_fire.get(gid, set()))
+        for guild_id in guild_ids_to_sync:
+            desired_users = await self._get_desired_fire_users_for_guild(guild_id)
+            await self._sync_fire_for_guild(guild_id, desired_users)
 
     async def _apply_overlap_tick(
         self,
@@ -328,24 +404,32 @@ class VcTrackerCog(commands.Cog):
         now_ts: int,
         tick_seconds: int,
         min_required_seconds: int,
+        daily_cap_seconds: int = 0,
     ) -> tuple[int, int, int]:
-        """
-        Adds overlap seconds for this duo and updates streak if day completed.
+        streak_id = await self.repos.get_or_create_duo(guild_id, user_a, user_b, now_ts)
 
-        Returns:
-            (duo_id, today_total_seconds, current_streak_after)
-        """
-        duo_id = await self.repos.get_or_create_duo(guild_id, user_a, user_b, now_ts)
-
-        today_total = await self.repos.add_duo_daily_seconds(
+        today_total = await self.repos.add_progress_seconds(
+            streak_id=streak_id,
             guild_id=guild_id,
-            duo_id=duo_id,
             day_key=day_key,
             seconds=tick_seconds,
             now_ts=now_ts,
+            event_type="vc_add",
+            meta_json=None,
+            daily_cap_seconds=daily_cap_seconds,
         )
 
-        current, longest, last_completed = await self.repos.get_streak_row(guild_id, duo_id)
+        state = await self.repos.get_streak_state(streak_id)
+        if state is None:
+            current = 0
+            longest = 0
+            total_completed_days = 0
+            last_completed = -1
+        else:
+            current = int(state["current_streak"])
+            longest = int(state["longest_streak"])
+            total_completed_days = int(state["total_completed_days"])
+            last_completed = int(state["last_completed_day_key"])
 
         became_completed, new_current, new_longest = compute_streak_transition(
             min_required_seconds=min_required_seconds,
@@ -357,18 +441,28 @@ class VcTrackerCog(commands.Cog):
         )
 
         if became_completed:
-            await self.repos.save_streak_row(
+            await self.repos.set_day_qualified(
+                streak_id=streak_id,
                 guild_id=guild_id,
-                duo_id=duo_id,
+                day_key=day_key,
+                qualified=True,
+                now_ts=now_ts,
+            )
+
+            await self.repos.save_streak_state(
+                streak_id=streak_id,
+                guild_id=guild_id,
                 current_streak=new_current,
                 longest_streak=new_longest,
+                total_completed_days=total_completed_days + 1,
                 last_completed_day_key=day_key,
                 now_ts=now_ts,
             )
+
             current = new_current
             print(f"[Ignio] ✅ duo complete: guild={guild_id} users={user_a}+{user_b} streak={new_current}")
 
-        return duo_id, today_total, current
+        return streak_id, today_total, current
 
     @tick.before_loop
     async def before_tick(self):

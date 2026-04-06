@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import traceback
 
+from bot.core.state import VcRuntimeState
 from bot.cogs.vc_tracker import VcTrackerCog
 from bot.cogs.admin import AdminCog
 from bot.cogs.streaks import StreaksCog
@@ -11,91 +12,49 @@ from bot.cogs.user_settings import UserSettingsCog
 from bot.cogs.errors import ErrorHandlerCog
 
 
+async def _safe_add_cog(bot, cog, name: str) -> bool:
+    try:
+        await bot.add_cog(cog)
+        print(f"[Ignio] ✅ {name} loaded")
+        return True
+    except Exception:
+        print(f"[Ignio] ❌ {name} FAILED")
+        traceback.print_exc()
+        return False
+
+
 async def load_all(bot, settings, repos, vc_state=None):
     print("[Ignio] Starting loader...")
 
-    # attach shared deps (so any cog can grab them if needed)
+    # shared deps
     bot.settings = settings
     bot.repos = repos
 
-    # ✅ Always ensure a shared VC state exists (but don't warn — this is normal)
+    # shared runtime VC state
     if vc_state is None:
-        from bot.core.state import VcRuntimeState
         vc_state = VcRuntimeState()
-
-    # expose it on bot so other cogs / utilities can access it
     bot.vc_state = vc_state
 
-    vc_cog = None
+    # build cogs first
+    vc_cog = VcTrackerCog(bot, settings, repos)
+    admin_cog = AdminCog(
+        bot=bot,
+        settings=settings,
+        repos=repos,
+        vc_state=getattr(vc_cog, "state", vc_state),
+        vc_cog=vc_cog,
+    )
+    streaks_cog = StreaksCog(bot, settings, repos)
+    user_settings_cog = UserSettingsCog(bot, settings, repos)
+    leaderboard_cog = LeaderboardCog(bot, settings, repos)
+    error_cog = ErrorHandlerCog(bot)
 
-    # ---------------- VC TRACKER ----------------
-    try:
-        # Prefer injecting vc_state if the cog supports it
-        try:
-            vc_cog = VcTrackerCog(bot, settings, repos, vc_state=vc_state)
-        except TypeError:
-            vc_cog = VcTrackerCog(bot, settings, repos)
-
-        await bot.add_cog(vc_cog)
-        print("[Ignio] ✅ VcTrackerCog loaded")
-    except Exception:
-        print("[Ignio] ❌ VcTrackerCog FAILED")
-        traceback.print_exc()
-        vc_cog = None
-
-    # Determine the best state reference for admin tools:
-    # - if vc_cog exposes .state, use it (most accurate)
-    # - else use the shared vc_state we created
-    effective_state = getattr(vc_cog, "state", None) if vc_cog else None
-    if effective_state is None:
-        effective_state = vc_state
-
-    # ---------------- ADMIN ----------------
-    try:
-        await bot.add_cog(
-            AdminCog(
-                bot=bot,
-                settings=settings,
-                repos=repos,
-                vc_state=effective_state,
-                vc_cog=vc_cog,
-            )
-        )
-        print("[Ignio] ✅ AdminCog loaded")
-    except Exception:
-        print("[Ignio] ❌ AdminCog FAILED")
-        traceback.print_exc()
-
-    # ---------------- STREAKS ----------------
-    try:
-        await bot.add_cog(StreaksCog(bot, settings, repos))
-        print("[Ignio] ✅ StreaksCog loaded")
-    except Exception:
-        print("[Ignio] ❌ StreaksCog FAILED")
-        traceback.print_exc()
-
-    # ---------------- USER SETTINGS ----------------
-    try:
-        await bot.add_cog(UserSettingsCog(bot, settings, repos))
-        print("[Ignio] ✅ UserSettingsCog loaded")
-    except Exception:
-        print("[Ignio] ❌ UserSettingsCog FAILED")
-        traceback.print_exc()
-
-    # ---------------- LEADERBOARD ----------------
-    try:
-        await bot.add_cog(LeaderboardCog(bot, settings, repos))
-        print("[Ignio] ✅ LeaderboardCog loaded")
-    except Exception:
-        print("[Ignio] ❌ LeaderboardCog FAILED")
-        traceback.print_exc()
-
-    # ---------------- ERROR HANDLER ----------------
-    try:
-        await bot.add_cog(ErrorHandlerCog(bot))
-        print("[Ignio] ✅ ErrorHandlerCog loaded")
-    except Exception:
-        print("[Ignio] ❌ ErrorHandlerCog FAILED")
-        traceback.print_exc()
+    # load in order
+    await _safe_add_cog(bot, vc_cog, "VcTrackerCog")
+    await _safe_add_cog(bot, admin_cog, "AdminCog")
+    await _safe_add_cog(bot, streaks_cog, "StreaksCog")
+    await _safe_add_cog(bot, user_settings_cog, "UserSettingsCog")
+    await _safe_add_cog(bot, leaderboard_cog, "LeaderboardCog")
+    await _safe_add_cog(bot, error_cog, "ErrorHandlerCog")
 
     print("[Ignio] Loaded cogs:", ", ".join(bot.cogs.keys()))

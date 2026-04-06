@@ -1,9 +1,10 @@
-# bot/cogs/streaks.py
+from __future__ import annotations
 
 import calendar
+from datetime import date
+
 import discord
 from discord.ext import commands
-from datetime import date
 
 from bot.core.timecore import now_utc_ts, day_key_from_utc_ts
 from bot.ui.formatting import duo_status_embed
@@ -16,8 +17,6 @@ class StreaksCog(commands.Cog):
         self.settings = settings
         self.repos = repos
 
-    # ---------------- internal helpers ----------------
-
     def _get_prefix(self) -> str:
         try:
             p = getattr(self.bot, "command_prefix", None)
@@ -28,8 +27,7 @@ class StreaksCog(commands.Cog):
         return "!"
 
     def _help_hint(self) -> str:
-        p = self._get_prefix()
-        return f"Need help? Use `{p}streak help`."
+        return f"Need help? Use `{self._get_prefix()}streak help`."
 
     async def _soft_fail(self, ctx: commands.Context, msg: str):
         return await ctx.reply(f"{msg}\n{self._help_hint()}")
@@ -52,8 +50,7 @@ class StreaksCog(commands.Cog):
 
         return await self._soft_fail(ctx, f"I couldn't detect a valid duo for {mode_label}.")
 
-    def _get_live_duo_from_vc(self, member: discord.Member):
-        """Return other user if VC has exactly 2 humans."""
+    def _get_live_duo_from_vc(self, member: discord.Member) -> discord.Member | None:
         if not member or not member.voice or not member.voice.channel:
             return None
 
@@ -62,33 +59,34 @@ class StreaksCog(commands.Cog):
             return None
 
         other = humans[0] if humans[1].id == member.id else humans[1]
+        if other.id == member.id:
+            return None
         return other
 
-    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool):
-        try:
-            conn = await self.repos.raw_conn(guild_id)
-            fallback = "1" if default_private else "0"
+    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool) -> bool:
+        v1 = await self.repos.get_user_setting_bool(
+            guild_id=guild_id,
+            user_id=u1,
+            key="privacy_private",
+            default=default_private,
+        )
+        v2 = await self.repos.get_user_setting_bool(
+            guild_id=guild_id,
+            user_id=u2,
+            key="privacy_private",
+            default=default_private,
+        )
+        return v1 or v2
 
-            cur = await conn.execute(
-                """
-                SELECT user_id, value
-                FROM user_settings
-                WHERE key='privacy_private' AND user_id IN (?, ?)
-                """,
-                (int(u1), int(u2)),
-            )
-            rows = await cur.fetchall()
-            vals = {int(uid): str(val) for uid, val in rows}
-
-            v1 = vals.get(int(u1), fallback)
-            v2 = vals.get(int(u2), fallback)
-            return (v1 == "1") or (v2 == "1")
-        except Exception:
-            return False
-
-    async def _can_view_duo(self, ctx, user_a, user_b, cfg):
-        default_private = bool(cfg.get("privacy_default_private", False))
-        admin_can_view = bool(cfg.get("privacy_admin_can_view", True))
+    async def _can_view_duo(
+        self,
+        ctx: commands.Context,
+        user_a: discord.Member,
+        user_b: discord.Member,
+        cfg: dict,
+    ) -> bool:
+        default_private = bool(cfg.get("privacy_default_private", 0))
+        admin_can_view = bool(cfg.get("privacy_admin_can_view", 1))
 
         is_private = await self._duo_is_private(ctx.guild.id, user_a.id, user_b.id, default_private)
         if not is_private:
@@ -102,41 +100,72 @@ class StreaksCog(commands.Cog):
 
         return False
 
-    async def _send_duo_embed(self, ctx, user_a, user_b):
+    async def _get_month_day_map(self, streak_id: int, year: int, month: int) -> dict[int, int]:
+        first_day_key = date(year, month, 1).toordinal()
+        last_day_num = calendar.monthrange(year, month)[1]
+        last_day_key = date(year, month, last_day_num).toordinal()
+
+        day_map: dict[int, int] = {}
+        for day_key in range(first_day_key, last_day_key + 1):
+            row = await self.repos.get_progress_row(streak_id, day_key)
+            if row is not None:
+                day_map[day_key] = int(row["progress_seconds"])
+        return day_map
+
+    async def _send_duo_embed(
+        self,
+        ctx: commands.Context,
+        user_a: discord.Member,
+        user_b: discord.Member,
+    ):
+        if user_a.id == user_b.id:
+            return await self._soft_fail(ctx, "You need two different users.")
+
         gid = ctx.guild.id
-        now = now_utc_ts()
+        now_ts = now_utc_ts()
         cfg = await self.repos.get_effective_config(gid, self.settings)
 
         if not await self._can_view_duo(ctx, user_a, user_b, cfg):
             return await ctx.reply("🔒 This duo streak is private.")
 
-        default_tz = str(cfg["default_tz"])
-        grace_hour = int(cfg["grace_hour_local"])
-        min_required = int(cfg["min_overlap_seconds"])
-        bar_width = int(cfg["progress_bar_width"])
+        default_tz = str(cfg.get("default_tz", self.settings.default_tz))
+        grace_hour = int(cfg.get("grace_hour_local", self.settings.grace_hour_local))
+        min_required = int(cfg.get("min_overlap_seconds", self.settings.min_overlap_seconds))
+        bar_width = int(cfg.get("progress_bar_width", self.settings.progress_bar_width))
 
         heat_met = str(cfg.get("heatmap_met_emoji", "🟥"))
         heat_empty = str(cfg.get("heatmap_empty_emoji", "⬜"))
 
-        today_key = day_key_from_utc_ts(now, default_tz, grace_hour)
+        today_key = day_key_from_utc_ts(now_ts, default_tz, grace_hour)
 
-        duo_id = await self.repos.get_duo_id(gid, user_a.id, user_b.id)
-        if duo_id is None:
+        streak = await self.repos.get_streak_by_member_hash(
+            guild_id=gid,
+            member_ids=[user_a.id, user_b.id],
+            only_active=True,
+        )
+
+        if streak is None:
             return await ctx.reply(
                 "No streak yet for this duo.\n"
                 "Join a VC with exactly 2 real users to start tracking."
             )
 
-        today_seconds = await self.repos.add_duo_daily_seconds(gid, duo_id, today_key, 0, now)
-        current, longest, _ = await self.repos.get_streak_row(gid, duo_id)
+        streak_id = int(streak["streak_id"])
+
+        progress_row = await self.repos.get_progress_row(streak_id, today_key)
+        today_seconds = 0 if progress_row is None else int(progress_row["progress_seconds"])
+
+        state = await self.repos.get_streak_state(streak_id)
+        if state is None:
+            current = 0
+            longest = 0
+        else:
+            current = int(state["current_streak"])
+            longest = int(state["longest_streak"])
 
         today = date.today()
-        first_day_key = date(today.year, today.month, 1).toordinal()
-        last_day_num = calendar.monthrange(today.year, today.month)[1]
-        last_day_key = date(today.year, today.month, last_day_num).toordinal()
-
-        day_map = await self.repos.get_duo_day_map(gid, duo_id, first_day_key, last_day_key)
-        cs = await self.repos.get_connection_score_seconds(gid, duo_id)
+        day_map = await self._get_month_day_map(streak_id, today.year, today.month)
+        connection_score_seconds = sum(day_map.values())
 
         embed = duo_status_embed(
             user_a=user_a,
@@ -147,59 +176,46 @@ class StreaksCog(commands.Cog):
             longest_streak=longest,
             bar_width=bar_width,
             status="active",
-            connection_score_seconds=cs,
+            connection_score_seconds=connection_score_seconds,
             heatmap_day_to_secs=day_map,
             heatmap_met_emoji=heat_met,
             heatmap_empty_emoji=heat_empty,
         )
-
         await ctx.reply(embed=embed)
-
-    # ---------------- command ----------------
 
     @commands.command(name="streak", aliases=["duo"])
     @commands.guild_only()
-    async def streak(self, ctx, arg1=None, arg2: discord.Member = None):
+    async def streak(self, ctx: commands.Context, *args: str):
         """
         !streak
-          -> quick check with VC duo (2 humans)
         !streak live
-          -> explicit live VC check
         !streak help
-          -> help embed
         !streak @user
-          -> your streak with @user
         !streak @user1 @user2
-          -> streak between two users (privacy applies)
         """
 
-        # !streak help
-        if isinstance(arg1, str) and arg1.lower() in ("help", "h", "?"):
-            return await self._send_streak_help(ctx)
-
-        # !streak live (explicit VC check)
-        if isinstance(arg1, str) and arg1.lower() == "live":
+        if not args:
             other = self._get_live_duo_from_vc(ctx.author)
             if other is None:
-                # clear reason + hint
-                return await self._vc_requirements_fail(ctx, mode_label="`streak live`")
-            return await self._send_duo_embed(ctx, ctx.author, other)
-
-        # !streak (quick VC check)
-        if arg1 is None:
-            other = self._get_live_duo_from_vc(ctx.author)
-            if other is None:
-                # clear reason + hint
                 return await self._vc_requirements_fail(ctx, mode_label="`streak`")
             return await self._send_duo_embed(ctx, ctx.author, other)
 
-        # !streak @user
-        if isinstance(arg1, discord.Member) and arg2 is None:
-            return await self._send_duo_embed(ctx, ctx.author, arg1)
+        text = " ".join(args).strip().lower()
+        if text in ("help", "h", "?"):
+            return await self._send_streak_help(ctx)
 
-        # !streak @user1 @user2
-        if isinstance(arg1, discord.Member) and isinstance(arg2, discord.Member):
-            return await self._send_duo_embed(ctx, arg1, arg2)
+        if text == "live":
+            other = self._get_live_duo_from_vc(ctx.author)
+            if other is None:
+                return await self._vc_requirements_fail(ctx, mode_label="`streak live`")
+            return await self._send_duo_embed(ctx, ctx.author, other)
 
-        # invalid usage -> help (clean)
+        members = ctx.message.mentions
+
+        if len(members) == 1:
+            return await self._send_duo_embed(ctx, ctx.author, members[0])
+
+        if len(members) == 2:
+            return await self._send_duo_embed(ctx, members[0], members[1])
+
         return await self._send_streak_help(ctx)
