@@ -1,132 +1,213 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
+from typing import Any
+from dotenv import load_dotenv
 
-try:
-    from dotenv import load_dotenv
-except Exception:
-    load_dotenv = None
+# load .env (does NOT override Railway env vars)
+load_dotenv()
 
 
-EMOJIS = {
-    "fire": "<:fire:1473077788658372742>",
-    "white_fire": "<:whitefire:1473077888487002316>",
-    "ice": "<:ice:1473077944036622489>",
+# -------------------------------------------------
+# emoji helper
+# -------------------------------------------------
+
+_EMOJI_MAP: dict[str, str] = {
+    "fire": "🔥",
+    "white_fire": "🤍",
+    "ice": "🧊",
+    "vc": "🎧",
+    "people": "👥",
+    "lock": "🔒",
+    "bolt": "⚡",
+    "chart": "📊",
+    "trophy": "🏆",
+    "handshake": "🤝",
+    "shield": "🛡️",
+    "gear": "⚙️",
+    "database": "🗄️",
+    "clock": "⏱️",
+    "test": "🧪",
+    "warning": "⚠️",
+    "mail": "📩",
+    "dot": "▫️",
 }
 
 
-def e(key: str) -> str:
-    return EMOJIS.get(key, key)
+def e(key: str | None = None) -> Any:
+    if key is None:
+        return dict(_EMOJI_MAP)
+    return _EMOJI_MAP.get(str(key), "")
 
 
-def _normalize_env(v: str | None) -> str:
-    s = (v or "").strip().lower()
+# -------------------------------------------------
+# env helpers
+# -------------------------------------------------
 
-    if s in ("dev", "development", "test", "testing"):
-        return "dev"
-    if s in ("prod", "production", "main", "live"):
-        return "prod"
+def _env_str(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    return value if value else default
 
-    # safer default
-    return "dev"
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except Exception:
+        return default
 
 
-@dataclass(frozen=True)
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on", "enabled"):
+        return True
+    if value in ("0", "false", "no", "off", "disabled"):
+        return False
+    return default
+
+
+def _parse_afk_ids(raw: str) -> tuple[int, ...]:
+    items: list[int] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            items.append(int(part))
+        except Exception:
+            continue
+    return tuple(items)
+
+
+# -------------------------------------------------
+# token helpers
+# -------------------------------------------------
+
+def _pick_token(env_name: str) -> tuple[str, str, str]:
+    dev_token = _env_str("DISCORD_TOKEN_DEV")
+    prod_token = _env_str("DISCORD_TOKEN_PROD")
+
+    # fallback (avoid unless needed)
+    fallback = _env_str("DISCORD_TOKEN", _env_str("TOKEN"))
+
+    if env_name == "dev":
+        token = dev_token or fallback
+    else:
+        token = prod_token or fallback
+
+    return token, dev_token, prod_token
+
+
+# -------------------------------------------------
+# main settings
+# -------------------------------------------------
+
+@dataclass(slots=True)
 class Settings:
-    token: str
-    env: str = "prod"
-
-    # ---------------- Bot ----------------
+    env: str = "dev"
     command_prefix_dev: str = "!!"
     command_prefix_prod: str = "!"
+    prefix: str = "!!"
 
-    @property
-    def prefix(self) -> str:
-        return self.command_prefix_dev if self.env == "dev" else self.command_prefix_prod
+    token: str = ""
+    discord_token: str = ""
+    discord_token_dev: str = ""
+    discord_token_prod: str = ""
 
-    # ---------------- Time ----------------
     default_tz: str = "America/Los_Angeles"
     grace_hour_local: int = 3
-
-    # ---------------- VC ----------------
-    min_overlap_seconds: int = 3 * 60
+    min_overlap_seconds: int = 180
     tick_seconds: int = 15
     disconnect_buffer_seconds: int = 60
-    daily_cap_seconds: int = 3 * 60 * 60
 
-    # ---------------- AFK ----------------
-    ignore_afk_channels: bool = True
-    afk_channel_ids: tuple[int, ...] = ()
+    daily_cap_seconds: int = 0
 
-    # ---------------- UI ----------------
     progress_bar_width: int = 12
-    heatmap_days: int = 28
     heatmap_met_emoji: str = "🟥"
     heatmap_empty_emoji: str = "⬜"
 
-    # ---------------- Privacy ----------------
+    ignore_afk_channels: bool = False
+    afk_channel_ids: tuple[int, ...] = ()
+
     privacy_default_private: bool = False
     privacy_admin_can_view: bool = True
 
-    # ---------------- DM ----------------
     dm_reminders_enabled: bool = True
-    dm_remind_before_minutes: int = 30
-    dm_remind_cooldown_minutes: int = 120
-
     dm_streak_end_enabled: bool = True
-    dm_streak_end_restore_enabled: bool = True
     dm_streak_end_ice_enabled: bool = True
-    restore_window_hours: int = 24
+    dm_streak_end_restore_enabled: bool = True
 
-    # ---------------- Nickname Fire ----------------
+    streak_restore_enabled: bool = True
+    streak_restore_window_minutes: int = 120
+    streak_end_warning_minutes: int = 60
+
     nickname_fire_enabled: bool = True
     nickname_fire_suffix: str = " 🔥"
+    nickname_edit_min_interval_seconds: int = 20
 
 
 def load_settings() -> Settings:
-    if load_dotenv is not None:
-        load_dotenv(override=False)
+    env_name = _env_str("IGNIO_ENV", "dev").lower()
 
-    env = _normalize_env(
-        os.getenv("IGNIO_ENV")
-        or os.getenv("ENV")
-        or os.getenv("APP_ENV")
-    )
+    command_prefix_dev = _env_str("COMMAND_PREFIX_DEV", _env_str("PREFIX_DEV", "!!"))
+    command_prefix_prod = _env_str("COMMAND_PREFIX_PROD", _env_str("PREFIX_PROD", "!"))
 
-    def _safe_len(v: str | None) -> int:
-        return len(v.strip()) if isinstance(v, str) else 0
+    token, dev_token, prod_token = _pick_token(env_name)
 
-    # only print debug in dev
-    if env == "dev":
-        print("[ENV] Mode:", env)
-        print("[ENV] Railway:", os.getenv("RAILWAY_ENVIRONMENT"))
-        print("[ENV] DEV token:", _safe_len(os.getenv("DISCORD_TOKEN_DEV")))
-        print("[ENV] PROD token:", _safe_len(os.getenv("DISCORD_TOKEN_PROD")))
+    settings = Settings(
+        env=env_name,
+        command_prefix_dev=command_prefix_dev,
+        command_prefix_prod=command_prefix_prod,
+        prefix=command_prefix_dev if env_name == "dev" else command_prefix_prod,
 
-    # -------- token selection --------
-    if env == "dev":
-        token = os.getenv("DISCORD_TOKEN_DEV", "").strip() or os.getenv("TOKEN_DEV", "").strip()
-    else:
-        token = os.getenv("DISCORD_TOKEN_PROD", "").strip() or os.getenv("TOKEN_PROD", "").strip()
-
-    if not token:
-        token = (
-            os.getenv("DISCORD_TOKEN", "").strip()
-            or os.getenv("TOKEN", "").strip()
-            or os.getenv("DISCORD_BOT_TOKEN", "").strip()
-        )
-
-    if not token:
-        raise RuntimeError("Missing bot token")
-
-    # -------- prefixes --------
-    prefix_dev = (os.getenv("IGNIO_PREFIX_DEV") or "").strip() or "!!"
-    prefix_prod = (os.getenv("IGNIO_PREFIX_PROD") or "").strip() or "!"
-
-    return Settings(
         token=token,
-        env=env,
-        command_prefix_dev=prefix_dev,
-        command_prefix_prod=prefix_prod,
+        discord_token=token,
+        discord_token_dev=dev_token,
+        discord_token_prod=prod_token,
+
+        default_tz=_env_str("DEFAULT_TZ", "America/Los_Angeles"),
+        grace_hour_local=_env_int("GRACE_HOUR_LOCAL", 3),
+        min_overlap_seconds=_env_int("MIN_OVERLAP_SECONDS", 180),
+        tick_seconds=_env_int("TICK_SECONDS", 15),
+        disconnect_buffer_seconds=_env_int("DISCONNECT_BUFFER_SECONDS", 60),
+
+        daily_cap_seconds=_env_int("DAILY_CAP_SECONDS", 0),
+
+        progress_bar_width=_env_int("PROGRESS_BAR_WIDTH", 12),
+        heatmap_met_emoji=_env_str("HEATMAP_MET_EMOJI", "🟥"),
+        heatmap_empty_emoji=_env_str("HEATMAP_EMPTY_EMOJI", "⬜"),
+
+        ignore_afk_channels=_env_bool("IGNORE_AFK_CHANNELS", False),
+
+        privacy_default_private=_env_bool("PRIVACY_DEFAULT_PRIVATE", False),
+        privacy_admin_can_view=_env_bool("PRIVACY_ADMIN_CAN_VIEW", True),
+
+        dm_reminders_enabled=_env_bool("DM_REMINDERS_ENABLED", True),
+        dm_streak_end_enabled=_env_bool("DM_STREAK_END_ENABLED", True),
+        dm_streak_end_ice_enabled=_env_bool("DM_STREAK_END_ICE_ENABLED", True),
+        dm_streak_end_restore_enabled=_env_bool("DM_STREAK_END_RESTORE_ENABLED", True),
+
+        streak_restore_enabled=_env_bool("STREAK_RESTORE_ENABLED", True),
+        streak_restore_window_minutes=_env_int("STREAK_RESTORE_WINDOW_MINUTES", 120),
+        streak_end_warning_minutes=_env_int("STREAK_END_WARNING_MINUTES", 60),
+
+        nickname_fire_enabled=_env_bool("NICKNAME_FIRE_ENABLED", True),
+        nickname_fire_suffix=_env_str("NICKNAME_FIRE_SUFFIX", " 🔥"),
+        nickname_edit_min_interval_seconds=_env_int("NICKNAME_EDIT_MIN_INTERVAL_SECONDS", 20),
     )
+
+    settings.afk_channel_ids = _parse_afk_ids(os.getenv("AFK_CHANNEL_IDS", ""))
+
+    return settings
+
+
+settings = load_settings()

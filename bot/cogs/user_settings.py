@@ -1,4 +1,3 @@
-# bot/cogs/user_settings.py
 from __future__ import annotations
 
 import discord
@@ -15,8 +14,8 @@ class UserSettingsCog(commands.Cog):
     """
     User-facing per-guild user settings.
 
-    Stores user overrides in user_settings.
-    Guild defaults come from guild_settings via repos.get_effective_config().
+    Keeps reminder controls simple so restore/lost/end-of-day DMs
+    can be useful without becoming noisy.
     """
 
     def __init__(self, bot: commands.Bot, settings, repos):
@@ -40,12 +39,7 @@ class UserSettingsCog(commands.Cog):
             "dm_streak_end_restore_enabled": bool(cfg.get("dm_streak_end_restore_enabled", True)),
         }
 
-    async def _show_settings_embed(self, ctx: commands.Context):
-        if ctx.guild is None:
-            return
-
-        guild_id = ctx.guild.id
-        user_id = ctx.author.id
+    async def _get_user_flags(self, guild_id: int, user_id: int) -> dict[str, bool]:
         defaults = await self._get_defaults(guild_id)
 
         privacy = await self.repos.get_user_setting_bool(
@@ -83,14 +77,28 @@ class UserSettingsCog(commands.Cog):
             default=defaults["dm_streak_end_ice_enabled"],
         )
 
+        return {
+            "privacy": privacy,
+            "dm": dm,
+            "dm_lost": dm_lost,
+            "dm_restore": dm_restore,
+            "dm_ice": dm_ice,
+        }
+
+    async def _show_settings_embed(self, ctx: commands.Context):
+        if ctx.guild is None:
+            return
+
+        flags = await self._get_user_flags(ctx.guild.id, ctx.author.id)
+
         return await ctx.reply(
             embed=user_settings_status_embed(
                 ctx,
-                privacy=privacy,
-                dm=dm,
-                dm_lost=dm_lost,
-                dm_restore=dm_restore,
-                dm_ice=dm_ice,
+                privacy=flags["privacy"],
+                dm=flags["dm"],
+                dm_lost=flags["dm_lost"],
+                dm_restore=flags["dm_restore"],
+                dm_ice=flags["dm_ice"],
             )
         )
 
@@ -121,7 +129,7 @@ class UserSettingsCog(commands.Cog):
             )
             return await ctx.reply(f"{status_msg_prefix} **{_onoff(value)}** for you.")
 
-        if mode in ("on", "enable", "1", "true"):
+        if mode in ("on", "enable", "enabled", "1", "true", "yes"):
             await self.repos.set_user_setting_bool(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -130,7 +138,7 @@ class UserSettingsCog(commands.Cog):
             )
             return await ctx.reply(on_msg)
 
-        if mode in ("off", "disable", "0", "false"):
+        if mode in ("off", "disable", "disabled", "0", "false", "no"):
             await self.repos.set_user_setting_bool(
                 guild_id=guild_id,
                 user_id=user_id,
@@ -140,6 +148,29 @@ class UserSettingsCog(commands.Cog):
             return await ctx.reply(off_msg)
 
         return await ctx.reply(embed=user_settings_help_embed(ctx))
+
+    async def _set_many(
+        self,
+        ctx: commands.Context,
+        *,
+        updates: dict[str, bool],
+        message: str,
+    ):
+        if ctx.guild is None:
+            return
+
+        guild_id = ctx.guild.id
+        user_id = ctx.author.id
+
+        for key, value in updates.items():
+            await self.repos.set_user_setting_bool(
+                guild_id=guild_id,
+                user_id=user_id,
+                key=key,
+                value=value,
+            )
+
+        return await ctx.reply(message)
 
     # ============================================================
     # settings hub
@@ -178,9 +209,9 @@ class UserSettingsCog(commands.Cog):
             key="dm_reminders_enabled",
             default_bool=defaults["dm_reminders_enabled"],
             mode=mode,
-            status_msg_prefix="📩 DM reminders are",
-            on_msg="📩 DM reminders **ON**. You’ll get a heads-up before the day ends.",
-            off_msg="📩 DM reminders **OFF**.",
+            status_msg_prefix="📩 Reminder DMs are",
+            on_msg="📩 Reminder DMs **ON**. I’ll send important streak alerts when needed.",
+            off_msg="📩 Reminder DMs **OFF**. I won’t DM you streak alerts.",
         )
 
     @settings_group.command(name="lost")
@@ -192,9 +223,9 @@ class UserSettingsCog(commands.Cog):
             key="dm_streak_end_enabled",
             default_bool=defaults["dm_streak_end_enabled"],
             mode=mode,
-            status_msg_prefix="⚠️ Streak lost alerts are",
-            on_msg="⚠️ **ON**. I’ll DM you when your streak is lost.",
-            off_msg="⚠️ **OFF**. I won’t DM you when your streak is lost.",
+            status_msg_prefix="🧊 Streak lost alerts are",
+            on_msg="🧊 Lost alerts **ON**. I’ll DM you when a streak ends.",
+            off_msg="🧊 Lost alerts **OFF**.",
         )
 
     @settings_group.command(name="dmend")
@@ -211,9 +242,9 @@ class UserSettingsCog(commands.Cog):
             key="dm_streak_end_ice_enabled",
             default_bool=defaults["dm_streak_end_ice_enabled"],
             mode=mode,
-            status_msg_prefix="🧊 Ice alerts are",
-            on_msg="🧊 **ON**. I’ll DM you when the restore window expires.",
-            off_msg="🧊 **OFF**.",
+            status_msg_prefix="🧊 Restore expired alerts are",
+            on_msg="🧊 Restore expired alerts **ON**. I’ll DM you when the restore window is fully gone.",
+            off_msg="🧊 Restore expired alerts **OFF**.",
         )
 
     @settings_group.command(name="dmrestore")
@@ -225,9 +256,53 @@ class UserSettingsCog(commands.Cog):
             key="dm_streak_end_restore_enabled",
             default_bool=defaults["dm_streak_end_restore_enabled"],
             mode=mode,
-            status_msg_prefix="🔥 Restore alerts are",
-            on_msg="🔥 **ON**. I’ll DM you when a streak can still be restored.",
-            off_msg="🔥 **OFF**.",
+            status_msg_prefix="🤍 Restore alerts are",
+            on_msg="🤍 Restore alerts **ON**. I’ll DM you if a streak can still be saved.",
+            off_msg="🤍 Restore alerts **OFF**.",
+        )
+
+    @settings_group.command(name="alerts")
+    @commands.guild_only()
+    async def settings_alerts(self, ctx: commands.Context):
+        if ctx.guild is None:
+            return
+
+        flags = await self._get_user_flags(ctx.guild.id, ctx.author.id)
+
+        lines = [
+            f"📩 Reminder DMs: **{_onoff(flags['dm'])}**",
+            f"🤍 Restore alerts: **{_onoff(flags['dm_restore'])}**",
+            f"🧊 Lost alerts: **{_onoff(flags['dm_lost'])}**",
+            f"🧊 Restore expired alerts: **{_onoff(flags['dm_ice'])}**",
+        ]
+        return await ctx.reply("\n".join(lines))
+
+    @settings_group.command(name="quiet")
+    @commands.guild_only()
+    async def settings_quiet(self, ctx: commands.Context):
+        return await self._set_many(
+            ctx,
+            updates={
+                "dm_reminders_enabled": False,
+                "dm_streak_end_enabled": False,
+                "dm_streak_end_ice_enabled": False,
+                "dm_streak_end_restore_enabled": False,
+            },
+            message="🔕 Quiet mode **ON**. All streak DMs are off for you.",
+        )
+
+    @settings_group.command(name="standard")
+    @commands.guild_only()
+    async def settings_standard(self, ctx: commands.Context):
+        return await self._set_many(
+            ctx,
+            updates={
+                "dm_reminders_enabled": True,
+                "dm_streak_end_enabled": True,
+                "dm_streak_end_ice_enabled": True,
+                "dm_streak_end_restore_enabled": True,
+            },
+            message="✅ Standard alerts **ON**. Important streak DMs are enabled again.",
         )
 
     # ============================================================
@@ -258,3 +333,18 @@ class UserSettingsCog(commands.Cog):
     @commands.guild_only()
     async def dm_restore(self, ctx: commands.Context, mode: str = ""):
         return await self.settings_dmrestore(ctx, mode)
+
+    @commands.command(name="alerts", hidden=True)
+    @commands.guild_only()
+    async def alerts(self, ctx: commands.Context):
+        return await self.settings_alerts(ctx)
+
+    @commands.command(name="quiet", hidden=True)
+    @commands.guild_only()
+    async def quiet(self, ctx: commands.Context):
+        return await self.settings_quiet(ctx)
+
+    @commands.command(name="standardalerts", hidden=True)
+    @commands.guild_only()
+    async def standardalerts(self, ctx: commands.Context):
+        return await self.settings_standard(ctx)

@@ -1,22 +1,11 @@
-# bot/cogs/leaderboard.py
 from __future__ import annotations
+
+from typing import Any
 
 import discord
 from discord.ext import commands
 
 from bot.ui.help_embeds import leaderboard_help_embed
-
-
-def fmt_hms(seconds: int) -> str:
-    seconds = max(0, int(seconds))
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-
-    if h > 0:
-        return f"{h}h {m}m"
-    if m > 0:
-        return f"{m}m"
-    return f"{seconds}s"
 
 
 class LeaderboardCog(commands.Cog):
@@ -36,187 +25,260 @@ class LeaderboardCog(commands.Cog):
             pass
         return "!"
 
-    def _help_hint(self) -> str:
-        return f"Need help? Use `{self._get_prefix()}lb help`."
-
-    async def _soft_fail(self, ctx: commands.Context, msg: str):
-        return await ctx.reply(f"{msg}\n{self._help_hint()}")
-
-    async def _send_lb_help(self, ctx: commands.Context):
-        return await ctx.reply(embed=leaderboard_help_embed(ctx))
-
-    def _member_label(self, guild: discord.Guild, user_id: int) -> str:
-        member = guild.get_member(user_id)
-        if member is None:
-            return f"`{user_id}`"
-        return member.mention
-
-    async def _duo_name(self, guild: discord.Guild, streak_id: int) -> str:
-        user_ids = await self.repos.get_streak_members(streak_id)
-        if len(user_ids) != 2:
-            return f"`streak {streak_id}`"
-
-        a = self._member_label(guild, user_ids[0])
-        b = self._member_label(guild, user_ids[1])
-        return f"{a} + {b}"
-
-    async def _duo_is_private(self, guild_id: int, streak_id: int, default_private: bool) -> bool:
-        user_ids = await self.repos.get_streak_members(streak_id)
-        if len(user_ids) != 2:
-            return False
-
+    async def _duo_is_private(self, guild_id: int, u1: int, u2: int, default_private: bool) -> bool:
         v1 = await self.repos.get_user_setting_bool(
             guild_id=guild_id,
-            user_id=user_ids[0],
+            user_id=u1,
             key="privacy_private",
             default=default_private,
         )
         v2 = await self.repos.get_user_setting_bool(
             guild_id=guild_id,
-            user_id=user_ids[1],
+            user_id=u2,
             key="privacy_private",
             default=default_private,
         )
         return v1 or v2
 
-    async def _build_lines(
+    def _fmt_duration(self, seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        s = seconds % 60
+
+        if h > 0 and m > 0:
+            return f"{h}h {m}m"
+        if h > 0:
+            return f"{h}h"
+        if m > 0:
+            return f"{m}m"
+        return f"{s}s"
+
+    def _duo_label(self, guild: discord.Guild, user_ids: list[int]) -> str:
+        members: list[str] = []
+
+        for user_id in user_ids[:2]:
+            member = guild.get_member(int(user_id))
+            if member is not None:
+                members.append(member.mention)
+            else:
+                members.append(f"User {user_id}")
+
+        if len(members) == 2:
+            return f"{members[0]} + {members[1]}"
+        if len(members) == 1:
+            return members[0]
+        return "Unknown duo"
+
+    async def _filter_public_duos(
         self,
-        ctx: commands.Context,
-        rows: list[dict],
-        *,
-        mode: str,
-        limit: int,
-    ) -> list[str]:
-        guild_id = ctx.guild.id
-        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+        guild: discord.Guild,
+        rows: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, Any], list[int]]]:
+        cfg = await self.repos.get_effective_config(guild.id, self.settings)
         default_private = bool(cfg.get("privacy_default_private", 0))
 
-        lines: list[str] = []
-        pos = 0
+        public_rows: list[tuple[dict[str, Any], list[int]]] = []
 
         for row in rows:
             streak_id = int(row["streak_id"])
-
-            # leaderboard is duo-only for now
-            if str(row["streak_type"]) != "duo":
+            members = await self.repos.get_streak_members(streak_id)
+            if len(members) != 2:
                 continue
 
-            if await self._duo_is_private(guild_id, streak_id, default_private):
+            u1, u2 = sorted(int(x) for x in members)
+            if await self._duo_is_private(guild.id, u1, u2, default_private):
                 continue
 
-            duo_name = await self._duo_name(ctx.guild, streak_id)
+            public_rows.append((row, [u1, u2]))
 
-            if mode == "streak":
-                value = f'{int(row["current_streak"])}d'
+        return public_rows
+
+    def _build_rank_lines(
+        self,
+        guild: discord.Guild,
+        rows: list[tuple[dict[str, Any], list[int]]],
+        *,
+        mode: str,
+        limit: int = 10,
+    ) -> str:
+        if not rows:
+            return "No public duos found yet."
+
+        lines: list[str] = []
+
+        for idx, (row, members) in enumerate(rows[:limit], start=1):
+            duo = self._duo_label(guild, members)
+
+            if mode == "current":
+                value = f"`{int(row['current_streak'])}d`"
             elif mode == "best":
-                value = f'{int(row["longest_streak"])}d'
+                value = f"`{int(row['longest_streak'])}d`"
+            elif mode == "score":
+                value = f"`{self._fmt_duration(int(row['connection_score']))}`"
             else:
-                value = fmt_hms(int(row["connection_score"]))
+                value = "`—`"
 
-            pos += 1
-            lines.append(f"**#{pos}** {duo_name} — **{value}**")
+            lines.append(f"**#{idx}** {duo} — {value}")
 
-            if pos >= limit:
-                break
-
-        if not lines:
-            return ["No public duos yet."]
-
-        return lines
-
-    def _simple_embed(self, title: str, description: str) -> discord.Embed:
-        return discord.Embed(
-            title=title,
-            description=description,
-        )
-
-    # ---------------- views ----------------
-
-    async def _send_current_lb(self, ctx: commands.Context):
-        rows = await self.repos.top_by_current_streak(ctx.guild.id, limit=25, streak_type="duo")
-        lines = await self._build_lines(ctx, rows, mode="streak", limit=10)
-
-        embed = self._simple_embed(
-            "🔥 Current Streak Leaderboard",
-            "\n".join(lines),
-        )
-        embed.set_footer(text=f"Use {self._get_prefix()}lb best or {self._get_prefix()}lb cs")
-        return await ctx.reply(embed=embed)
-
-    async def _send_best_lb(self, ctx: commands.Context):
-        rows = await self.repos.top_by_longest_streak(ctx.guild.id, limit=25, streak_type="duo")
-        lines = await self._build_lines(ctx, rows, mode="best", limit=10)
-
-        embed = self._simple_embed(
-            "🏆 Best Streak Leaderboard",
-            "\n".join(lines),
-        )
-        embed.set_footer(text=f"Use {self._get_prefix()}lb streak or {self._get_prefix()}lb cs")
-        return await ctx.reply(embed=embed)
-
-    async def _send_cs_lb(self, ctx: commands.Context):
-        rows = await self.repos.top_by_connection_score(ctx.guild.id, limit=25, streak_type="duo")
-        lines = await self._build_lines(ctx, rows, mode="cs", limit=10)
-
-        embed = self._simple_embed(
-            "🤝 Connection Score Leaderboard",
-            "\n".join(lines),
-        )
-        embed.set_footer(text=f"Use {self._get_prefix()}lb streak or {self._get_prefix()}lb best")
-        return await ctx.reply(embed=embed)
+        return "\n".join(lines)
 
     async def _send_overview(self, ctx: commands.Context):
-        gid = ctx.guild.id
+        guild = ctx.guild
 
-        current_rows = await self.repos.top_by_current_streak(gid, limit=10, streak_type="duo")
-        best_rows = await self.repos.top_by_longest_streak(gid, limit=10, streak_type="duo")
-        cs_rows = await self.repos.top_by_connection_score(gid, limit=10, streak_type="duo")
+        current_rows = await self.repos.top_by_current_streak(
+            guild_id=guild.id,
+            limit=5,
+            streak_type="duo",
+        )
+        best_rows = await self.repos.top_by_longest_streak(
+            guild_id=guild.id,
+            limit=5,
+            streak_type="duo",
+        )
+        score_rows = await self.repos.top_by_connection_score(
+            guild_id=guild.id,
+            limit=5,
+            streak_type="duo",
+        )
 
-        current_lines = await self._build_lines(ctx, current_rows, mode="streak", limit=5)
-        best_lines = await self._build_lines(ctx, best_rows, mode="best", limit=5)
-        cs_lines = await self._build_lines(ctx, cs_rows, mode="cs", limit=5)
+        current_public = await self._filter_public_duos(guild, current_rows)
+        best_public = await self._filter_public_duos(guild, best_rows)
+        score_public = await self._filter_public_duos(guild, score_rows)
 
-        embed = discord.Embed(title="📊 Leaderboards")
-        embed.add_field(name="🔥 Current", value="\n".join(current_lines)[:1024], inline=False)
-        embed.add_field(name="🏆 Best", value="\n".join(best_lines)[:1024], inline=False)
-        embed.add_field(name="🤝 Score", value="\n".join(cs_lines)[:1024], inline=False)
-        embed.set_footer(text=f"Use {self._get_prefix()}lb streak | {self._get_prefix()}lb best | {self._get_prefix()}lb cs")
+        embed = discord.Embed(
+            title="📊 Leaderboards",
+            description="Public duo rankings for this server.",
+        )
 
-        return await ctx.reply(embed=embed)
+        embed.add_field(
+            name="🔥 Current",
+            value=self._build_rank_lines(guild, current_public, mode="current", limit=5),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🏆 Best",
+            value=self._build_rank_lines(guild, best_public, mode="best", limit=5),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🤝 Score",
+            value=self._build_rank_lines(guild, score_public, mode="score", limit=5),
+            inline=False,
+        )
+
+        p = self._get_prefix()
+        embed.set_footer(text=f"Use {p}lb streak | {p}lb best | {p}lb cs")
+        await ctx.reply(embed=embed)
+
+    async def _send_current_lb(self, ctx: commands.Context):
+        guild = ctx.guild
+
+        rows = await self.repos.top_by_current_streak(
+            guild_id=guild.id,
+            limit=10,
+            streak_type="duo",
+        )
+        public_rows = await self._filter_public_duos(guild, rows)
+
+        embed = discord.Embed(
+            title="🔥 Current Streak Leaderboard",
+            description=self._build_rank_lines(guild, public_rows, mode="current", limit=10),
+        )
+        embed.set_footer(text=f"Use {self._get_prefix()}lb best or {self._get_prefix()}lb cs")
+        await ctx.reply(embed=embed)
+
+    async def _send_best_lb(self, ctx: commands.Context):
+        guild = ctx.guild
+
+        rows = await self.repos.top_by_longest_streak(
+            guild_id=guild.id,
+            limit=10,
+            streak_type="duo",
+        )
+        public_rows = await self._filter_public_duos(guild, rows)
+
+        embed = discord.Embed(
+            title="🏆 Best Streak Leaderboard",
+            description=self._build_rank_lines(guild, public_rows, mode="best", limit=10),
+        )
+        embed.set_footer(text=f"Use {self._get_prefix()}lb streak or {self._get_prefix()}lb cs")
+        await ctx.reply(embed=embed)
+
+    async def _send_score_lb(self, ctx: commands.Context):
+        guild = ctx.guild
+
+        rows = await self.repos.top_by_connection_score(
+            guild_id=guild.id,
+            limit=10,
+            streak_type="duo",
+        )
+        public_rows = await self._filter_public_duos(guild, rows)
+
+        embed = discord.Embed(
+            title="🤝 Connection Score Leaderboard",
+            description=self._build_rank_lines(guild, public_rows, mode="score", limit=10),
+        )
+        embed.set_footer(text=f"Use {self._get_prefix()}lb streak or {self._get_prefix()}lb best")
+        await ctx.reply(embed=embed)
 
     # ---------------- commands ----------------
 
-    @commands.command(name="lb", aliases=["leaderboard"])
+    @commands.group(name="lb", aliases=["leaderboard"], invoke_without_command=True)
     @commands.guild_only()
-    async def lb(self, ctx: commands.Context, kind: str | None = None):
-        kind = (kind or "").strip().lower()
+    async def lb_group(self, ctx: commands.Context):
+        return await self._send_overview(ctx)
 
-        if kind in ("help", "h", "?"):
-            return await self._send_lb_help(ctx)
+    @lb_group.command(name="help")
+    @commands.guild_only()
+    async def lb_help(self, ctx: commands.Context):
+        return await ctx.reply(embed=leaderboard_help_embed(ctx))
 
-        if kind in ("", "all", "overview"):
-            return await self._send_overview(ctx)
+    @lb_group.command(name="streak")
+    @commands.guild_only()
+    async def lb_streak(self, ctx: commands.Context):
+        return await self._send_current_lb(ctx)
 
-        if kind in ("streak", "current"):
-            return await self._send_current_lb(ctx)
+    @lb_group.command(name="current")
+    @commands.guild_only()
+    async def lb_current(self, ctx: commands.Context):
+        return await self._send_current_lb(ctx)
 
-        if kind in ("best", "record"):
-            return await self._send_best_lb(ctx)
+    @lb_group.command(name="best")
+    @commands.guild_only()
+    async def lb_best(self, ctx: commands.Context):
+        return await self._send_best_lb(ctx)
 
-        if kind in ("cs", "score", "connection"):
-            return await self._send_cs_lb(ctx)
+    @lb_group.command(name="record")
+    @commands.guild_only()
+    async def lb_record(self, ctx: commands.Context):
+        return await self._send_best_lb(ctx)
 
-        return await self._soft_fail(ctx, "Invalid option.")
+    @lb_group.command(name="cs")
+    @commands.guild_only()
+    async def lb_cs(self, ctx: commands.Context):
+        return await self._send_score_lb(ctx)
+
+    @lb_group.command(name="score")
+    @commands.guild_only()
+    async def lb_score(self, ctx: commands.Context):
+        return await self._send_score_lb(ctx)
+
+    # ---------------- legacy hidden cmds ----------------
 
     @commands.command(name="streaklb", hidden=True)
     @commands.guild_only()
-    async def streaklb(self, ctx: commands.Context, kind: str = "streak"):
-        kind = (kind or "streak").strip().lower()
-        if kind in ("best", "record"):
-            return await self.lb(ctx, "best")
-        return await self.lb(ctx, "streak")
+    async def streaklb(self, ctx: commands.Context):
+        return await self._send_current_lb(ctx)
+
+    @commands.command(name="bestlb", hidden=True)
+    @commands.guild_only()
+    async def bestlb(self, ctx: commands.Context):
+        return await self._send_best_lb(ctx)
 
     @commands.command(name="cslb", hidden=True)
     @commands.guild_only()
     async def cslb(self, ctx: commands.Context):
-        return await self.lb(ctx, "cs")
+        return await self._send_score_lb(ctx)

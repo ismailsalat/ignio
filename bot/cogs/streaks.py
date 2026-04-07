@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date
+from datetime import date, timedelta
 
 import discord
 from discord.ext import commands
@@ -16,6 +16,8 @@ class StreaksCog(commands.Cog):
         self.bot = bot
         self.settings = settings
         self.repos = repos
+
+    # ---------------- internal helpers ----------------
 
     def _get_prefix(self) -> str:
         try:
@@ -112,11 +114,242 @@ class StreaksCog(commands.Cog):
                 day_map[day_key] = int(row["progress_seconds"])
         return day_map
 
+    async def _get_recent_days_map(self, streak_id: int, days: int = 7) -> dict[int, int]:
+        today = date.today()
+        start = today - timedelta(days=max(1, days) - 1)
+
+        day_map: dict[int, int] = {}
+        cur = start
+        while cur <= today:
+            row = await self.repos.get_progress_row(streak_id, cur.toordinal())
+            day_map[cur.toordinal()] = 0 if row is None else int(row["progress_seconds"])
+            cur += timedelta(days=1)
+
+        return day_map
+
+    def _fmt_hms(self, seconds: int) -> str:
+        seconds = max(0, int(seconds))
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+
+        if h > 0 and m > 0:
+            return f"{h}h {m}m"
+        if h > 0:
+            return f"{h}h"
+        return f"{m}m"
+
+    def _fmt_day_short(self, day_key: int) -> str:
+        d = date.fromordinal(day_key)
+        return d.strftime("%b %d")
+
+    def _fmt_day_full(self, day_key: int) -> str:
+        d = date.fromordinal(day_key)
+        return d.strftime("%b %d, %Y")
+
+    def _build_recent_summary(self, recent_map: dict[int, int]) -> str:
+        parts: list[str] = []
+        for day_key in sorted(recent_map.keys()):
+            secs = int(recent_map[day_key])
+            label = date.fromordinal(day_key).strftime("%a")
+            if secs <= 0:
+                parts.append(f"`{label}` — 0m")
+            else:
+                parts.append(f"`{label}` — {self._fmt_hms(secs)}")
+        return "\n".join(parts)
+
+    async def _build_duo_profile_embed(
+        self,
+        ctx: commands.Context,
+        *,
+        user_a: discord.Member,
+        user_b: discord.Member,
+        streak_id: int,
+        today_seconds: int,
+        min_required: int,
+        current: int,
+        longest: int,
+        total_completed_days: int,
+        today_key: int,
+        bar_width: int,
+        heat_met: str,
+        heat_empty: str,
+    ) -> discord.Embed:
+        today = date.today()
+        month_map = await self._get_month_day_map(streak_id, today.year, today.month)
+        recent_map = await self._get_recent_days_map(streak_id, days=7)
+
+        connection_score_seconds = await self.repos.get_connection_score_seconds(streak_id)
+
+        first_active_key = min(month_map.keys()) if month_map else None
+        last_active_key = max(month_map.keys()) if month_map else None
+
+        embed = duo_status_embed(
+            user_a=user_a,
+            user_b=user_b,
+            today_seconds=today_seconds,
+            min_required=min_required,
+            current_streak=current,
+            longest_streak=longest,
+            bar_width=bar_width,
+            status="active" if current > 0 else "idle",
+            connection_score_seconds=connection_score_seconds,
+            heatmap_day_to_secs=month_map,
+            heatmap_met_emoji=heat_met,
+            heatmap_empty_emoji=heat_empty,
+        )
+
+        if first_active_key is not None or last_active_key is not None:
+            started_text = self._fmt_day_short(first_active_key) if first_active_key is not None else "—"
+            last_text = self._fmt_day_short(last_active_key) if last_active_key is not None else "—"
+
+            embed.add_field(
+                name="Profile",
+                value=(
+                    f"**Current streak:** `{current}`\n"
+                    f"**Longest streak:** `{longest}`\n"
+                    f"**Completed days:** `{total_completed_days}`\n"
+                    f"**First day this month:** `{started_text}`\n"
+                    f"**Last active day this month:** `{last_text}`"
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Profile",
+                value=(
+                    f"**Current streak:** `{current}`\n"
+                    f"**Longest streak:** `{longest}`\n"
+                    f"**Completed days:** `{total_completed_days}`"
+                ),
+                inline=False,
+            )
+
+        remaining_today = max(0, min_required - today_seconds)
+        embed.add_field(
+            name="Today",
+            value=(
+                f"**Progress:** `{self._fmt_hms(today_seconds)}` / `{self._fmt_hms(min_required)}`\n"
+                f"**Left today:** `{self._fmt_hms(remaining_today)}`\n"
+                f"**Connection score:** `{self._fmt_hms(connection_score_seconds)}`"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Last 7 Days",
+            value=self._build_recent_summary(recent_map),
+            inline=False,
+        )
+
+        embed.set_footer(text=f"Duo profile • Day key {today_key}")
+        return embed
+
+    async def _build_history_embed(
+        self,
+        ctx: commands.Context,
+        *,
+        user_a: discord.Member,
+        user_b: discord.Member,
+        streak_id: int,
+    ) -> discord.Embed:
+        state = await self.repos.get_streak_state(streak_id)
+        current = 0 if state is None else int(state["current_streak"])
+        longest = 0 if state is None else int(state["longest_streak"])
+        total_completed_days = 0 if state is None else int(state["total_completed_days"])
+        last_completed = -1 if state is None else int(state["last_completed_day_key"])
+
+        recent_days = []
+        if hasattr(self.repos, "get_recent_progress_days"):
+            recent_days = await self.repos.get_recent_progress_days(streak_id, limit=10)
+        else:
+            recent_map = await self._get_recent_days_map(streak_id, days=10)
+            recent_days = [
+                {
+                    "day_key": dk,
+                    "progress_seconds": secs,
+                    "qualified": 0,
+                    "updated_at": 0,
+                }
+                for dk, secs in sorted(recent_map.items(), reverse=True)
+            ]
+
+        logs = []
+        if hasattr(self.repos, "get_recent_activity_logs"):
+            logs = await self.repos.get_recent_activity_logs(streak_id, limit=10)
+
+        embed = discord.Embed(
+            title="📜 Duo History",
+            description=f"**{user_a.display_name} + {user_b.display_name}**",
+        )
+
+        embed.add_field(
+            name="Summary",
+            value=(
+                f"**Current streak:** `{current}`\n"
+                f"**Longest streak:** `{longest}`\n"
+                f"**Completed days:** `{total_completed_days}`\n"
+                f"**Last completed day:** `{self._fmt_day_full(last_completed) if last_completed > 0 else '—'}`"
+            ),
+            inline=False,
+        )
+
+        if recent_days:
+            lines: list[str] = []
+            for row in recent_days[:10]:
+                day_key = int(row["day_key"])
+                secs = int(row["progress_seconds"])
+                qualified = int(row.get("qualified", 0))
+                status = "✅" if qualified else "•"
+                lines.append(f"{status} `{self._fmt_day_short(day_key)}` — `{self._fmt_hms(secs)}`")
+            embed.add_field(
+                name="Recent Days",
+                value="\n".join(lines),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Recent Days",
+                value="No history yet.",
+                inline=False,
+            )
+
+        if logs:
+            log_lines: list[str] = []
+            for row in logs[:10]:
+                event_type = str(row.get("event_type", "event"))
+                seconds_delta = int(row.get("seconds_delta", 0))
+                day_key = int(row.get("day_key", 0))
+
+                if event_type == "vc_add":
+                    label = "VC progress"
+                elif event_type == "manual_add":
+                    label = "Admin add"
+                elif event_type == "admin_add":
+                    label = "Admin add"
+                else:
+                    label = event_type.replace("_", " ").title()
+
+                log_lines.append(
+                    f"• `{self._fmt_day_short(day_key)}` — {label} `{self._fmt_hms(seconds_delta)}`"
+                )
+
+            embed.add_field(
+                name="Recent Activity",
+                value="\n".join(log_lines),
+                inline=False,
+            )
+
+        embed.set_footer(text="Ignio history view")
+        return embed
+
     async def _send_duo_embed(
         self,
         ctx: commands.Context,
         user_a: discord.Member,
         user_b: discord.Member,
+        *,
+        profile_mode: bool = False,
+        history_mode: bool = False,
     ):
         if user_a.id == user_b.id:
             return await self._soft_fail(ctx, "You need two different users.")
@@ -159,9 +392,38 @@ class StreaksCog(commands.Cog):
         if state is None:
             current = 0
             longest = 0
+            total_completed_days = 0
         else:
             current = int(state["current_streak"])
             longest = int(state["longest_streak"])
+            total_completed_days = int(state["total_completed_days"])
+
+        if history_mode:
+            embed = await self._build_history_embed(
+                ctx,
+                user_a=user_a,
+                user_b=user_b,
+                streak_id=streak_id,
+            )
+            return await ctx.reply(embed=embed)
+
+        if profile_mode:
+            embed = await self._build_duo_profile_embed(
+                ctx,
+                user_a=user_a,
+                user_b=user_b,
+                streak_id=streak_id,
+                today_seconds=today_seconds,
+                min_required=min_required,
+                current=current,
+                longest=longest,
+                total_completed_days=total_completed_days,
+                today_key=today_key,
+                bar_width=bar_width,
+                heat_met=heat_met,
+                heat_empty=heat_empty,
+            )
+            return await ctx.reply(embed=embed)
 
         today = date.today()
         day_map = await self._get_month_day_map(streak_id, today.year, today.month)
@@ -183,6 +445,8 @@ class StreaksCog(commands.Cog):
         )
         await ctx.reply(embed=embed)
 
+    # ---------------- command ----------------
+
     @commands.command(name="streak", aliases=["duo"])
     @commands.guild_only()
     async def streak(self, ctx: commands.Context, *args: str):
@@ -192,6 +456,11 @@ class StreaksCog(commands.Cog):
         !streak help
         !streak @user
         !streak @user1 @user2
+        !streak profile @user
+        !streak card @user
+        !streak history @user
+        !streak logs @user
+        !streak recent @user
         """
 
         if not args:
@@ -201,6 +470,7 @@ class StreaksCog(commands.Cog):
             return await self._send_duo_embed(ctx, ctx.author, other)
 
         text = " ".join(args).strip().lower()
+
         if text in ("help", "h", "?"):
             return await self._send_streak_help(ctx)
 
@@ -210,12 +480,35 @@ class StreaksCog(commands.Cog):
                 return await self._vc_requirements_fail(ctx, mode_label="`streak live`")
             return await self._send_duo_embed(ctx, ctx.author, other)
 
-        members = ctx.message.mentions
+        mentions = ctx.message.mentions
+        head = args[0].lower()
 
-        if len(members) == 1:
-            return await self._send_duo_embed(ctx, ctx.author, members[0])
+        if head in ("profile", "card"):
+            if len(mentions) == 1:
+                return await self._send_duo_embed(ctx, ctx.author, mentions[0], profile_mode=True)
 
-        if len(members) == 2:
-            return await self._send_duo_embed(ctx, members[0], members[1])
+            if len(mentions) == 2:
+                return await self._send_duo_embed(ctx, mentions[0], mentions[1], profile_mode=True)
+
+            return await ctx.reply(
+                f"Use `{self._get_prefix()}streak profile @user` or `{self._get_prefix()}streak profile @user1 @user2`."
+            )
+
+        if head in ("history", "logs", "recent"):
+            if len(mentions) == 1:
+                return await self._send_duo_embed(ctx, ctx.author, mentions[0], history_mode=True)
+
+            if len(mentions) == 2:
+                return await self._send_duo_embed(ctx, mentions[0], mentions[1], history_mode=True)
+
+            return await ctx.reply(
+                f"Use `{self._get_prefix()}streak history @user` or `{self._get_prefix()}streak history @user1 @user2`."
+            )
+
+        if len(mentions) == 1:
+            return await self._send_duo_embed(ctx, ctx.author, mentions[0])
+
+        if len(mentions) == 2:
+            return await self._send_duo_embed(ctx, mentions[0], mentions[1])
 
         return await self._send_streak_help(ctx)

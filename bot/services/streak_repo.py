@@ -1,4 +1,3 @@
-# bot/services/streak_repo.py
 from __future__ import annotations
 
 import time
@@ -129,6 +128,12 @@ class StreakRepo:
             "dm_streak_end_restore_enabled": 1 if getattr(settings, "dm_streak_end_restore_enabled", True) else 0,
             "heatmap_met_emoji": getattr(settings, "heatmap_met_emoji", "🟥"),
             "heatmap_empty_emoji": getattr(settings, "heatmap_empty_emoji", "⬜"),
+            "streak_restore_enabled": 1 if getattr(settings, "streak_restore_enabled", True) else 0,
+            "streak_restore_window_minutes": int(getattr(settings, "streak_restore_window_minutes", 120)),
+            "streak_end_warning_minutes": int(getattr(settings, "streak_end_warning_minutes", 60)),
+            "nickname_fire_enabled": 1 if getattr(settings, "nickname_fire_enabled", True) else 0,
+            "nickname_fire_suffix": str(getattr(settings, "nickname_fire_suffix", " 🔥")),
+            "nickname_edit_min_interval_seconds": int(getattr(settings, "nickname_edit_min_interval_seconds", 20)),
         }
 
         rows = await db.fetchall(
@@ -156,6 +161,11 @@ class StreakRepo:
             "dm_streak_end_enabled",
             "dm_streak_end_ice_enabled",
             "dm_streak_end_restore_enabled",
+            "streak_restore_enabled",
+            "streak_restore_window_minutes",
+            "streak_end_warning_minutes",
+            "nickname_fire_enabled",
+            "nickname_edit_min_interval_seconds",
         }
 
         for row in rows:
@@ -226,6 +236,20 @@ class StreakRepo:
         )
         await db.commit()
         await self.invalidate_config_cache(guild_id)
+
+    async def set_guild_setting_bool(
+        self,
+        guild_id: int,
+        key: str,
+        value: bool,
+        now_ts: int | None = None,
+    ) -> None:
+        await self.set_guild_setting_int(
+            guild_id=guild_id,
+            key=key,
+            value=1 if value else 0,
+            now_ts=now_ts,
+        )
 
     # -------------------------
     # user settings
@@ -454,6 +478,50 @@ class StreakRepo:
             (guild_id,),
         )
         return {int(row["user_id"]) for row in rows}
+
+    async def get_recent_activity_logs(
+        self,
+        streak_id: int,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        db = await self._db()
+        rows = await db.fetchall(
+            """
+            SELECT streak_id, guild_id, day_key, event_type, seconds_delta, meta_json, created_at
+            FROM streak_activity_logs
+            WHERE streak_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT ?
+            """,
+            (streak_id, int(limit)),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_recent_progress_days(
+        self,
+        streak_id: int,
+        limit: int = 14,
+    ) -> list[dict[str, int]]:
+        db = await self._db()
+        rows = await db.fetchall(
+            """
+            SELECT day_key, progress_seconds, qualified, updated_at
+            FROM streak_daily_progress
+            WHERE streak_id = ?
+            ORDER BY day_key DESC
+            LIMIT ?
+            """,
+            (streak_id, int(limit)),
+        )
+        return [
+            {
+                "day_key": int(row["day_key"]),
+                "progress_seconds": int(row["progress_seconds"]),
+                "qualified": int(row["qualified"]),
+                "updated_at": int(row["updated_at"]),
+            }
+            for row in rows
+        ]
 
     # -------------------------
     # create duo / group

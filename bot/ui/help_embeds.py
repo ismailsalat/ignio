@@ -1,4 +1,3 @@
-# bot/ui/help_embeds.py
 from __future__ import annotations
 
 import discord
@@ -333,3 +332,113 @@ def user_settings_status_embed(ctx, *, privacy: bool, dm: bool, dm_lost: bool, d
 
     embed.set_footer(text=f"Change: {prefix}settings help")
     return embed
+
+
+# ============================================================
+# DM / Notification Embeds
+# ============================================================
+
+def streak_restore_available_embed(ctx, *, duo_label: str | None = None, minutes_left: int | None = None) -> discord.Embed:
+    guild = getattr(ctx, "guild", None)
+    white_fire = _emoji(guild, "white_fire", "🤍")
+
+    lines: list[str] = []
+
+    if duo_label:
+        lines.append(f"Your streak with **{duo_label}** ended, but you can still restore it.")
+    else:
+        lines.append("Your duo streak ended, but you can still restore it.")
+
+    lines.append("")
+    lines.append("**What to do**")
+    lines.append("Hop in VC with your duo before the restore window ends.")
+
+    if minutes_left is not None and minutes_left > 0:
+        if minutes_left >= 60:
+            h = minutes_left // 60
+            m = minutes_left % 60
+            time_text = f"{h}h {m}m" if m else f"{h}h"
+        else:
+            time_text = f"{minutes_left}m"
+
+        lines.append("")
+        lines.append(f"Time left: **{time_text}**")
+
+    return discord.Embed(
+        title=f"{white_fire} Streak Restore Available",
+        description="\n".join(lines),
+    )
+
+
+def streak_lost_embed(ctx, *, duo_label: str | None = None) -> discord.Embed:
+    guild = getattr(ctx, "guild", None)
+    ice = _emoji(guild, "ice", "🧊")
+
+    if duo_label:
+        desc = (
+            f"Your streak with **{duo_label}** expired.\n"
+            "This streak can’t be restored anymore."
+        )
+    else:
+        desc = (
+            "Restore window expired.\n"
+            "This streak can’t be restored anymore."
+        )
+
+    return discord.Embed(
+        title=f"{ice} Streak Lost",
+        description=desc,
+    )
+
+
+def end_of_day_warning_embed(ctx, *, duo_label: str | None = None, remaining_seconds: int) -> discord.Embed:
+    guild = getattr(ctx, "guild", None)
+    fire = _emoji(guild, "fire", "🔥")
+
+    remaining_seconds = max(0, int(remaining_seconds))
+    h = remaining_seconds // 3600
+    m = (remaining_seconds % 3600) // 60
+
+    if h > 0:
+        need = f"{h}h {m}m"
+    elif m > 0:
+        need = f"{m}m"
+    else:
+        need = "<1m"
+
+    if duo_label:
+        desc = (
+            f"You still need about **{need}** in VC with **{duo_label}** today.\n\n"
+            "Hop in before the day ends."
+        )
+    else:
+        desc = (
+            f"You still need about **{need}** in VC today.\n\n"
+            "Hop in before the day ends."
+        )
+
+    return discord.Embed(
+        title=f"{fire} Streak Reminder",
+        description=desc,
+    )
+
+
+def restore_success_embed(ctx, *, duo_label: str | None = None, current_streak: int | None = None) -> discord.Embed:
+    guild = getattr(ctx, "guild", None)
+    fire = _emoji(guild, "fire", "🔥")
+
+    lines: list[str] = []
+
+    if duo_label:
+        lines.append(f"Your streak with **{duo_label}** has been restored.")
+    else:
+        lines.append("Your streak has been restored.")
+
+    if current_streak is not None and current_streak > 0:
+        lines.append("")
+        lines.append(f"Current streak: **{current_streak}**")
+
+    return discord.Embed(
+        title=f"{fire} Streak Restored",
+        description="\n".join(lines),
+    )

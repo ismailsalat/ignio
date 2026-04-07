@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import discord
 from discord.ext import commands, tasks
 
 from bot.core.state import VcRuntimeState
 from bot.core.timecore import now_utc_ts, day_key_from_utc_ts
 from bot.core.streak_engine import compute_streak_transition
+from bot.ui.help_embeds import (
+    end_of_day_warning_embed,
+    restore_success_embed,
+    streak_lost_embed,
+    streak_restore_available_embed,
+)
 
 
 class VcTrackerCog(commands.Cog):
     """
-    Duo-only VC tracker + fire nickname sync.
+    Duo-only VC tracker + fire nickname sync + restore/reminder flow.
 
     Fire rule:
-    - show fire only if the user is currently in a valid duo VC
-    - and that duo already has current_streak > 0
-    - do NOT show fire just because today's progress is close to the limit
+    - fire shows only if user is in a valid duo VC
+    - and that duo still has current_streak > 0
+
+    Reminder / restore flow:
+    - end-of-day reminder: warns active streak duos before the streak day ends
+    - restore window: if a streak misses a day, users can still save it for a short window
+    - lost / ice: once restore expires, current_streak becomes 0
     """
 
     def __init__(self, bot: commands.Bot, settings, repos, vc_state: VcRuntimeState | None = None):
@@ -30,12 +43,18 @@ class VcTrackerCog(commands.Cog):
         self._fire_snapshot: dict[int, dict[int, dict[str, str | None]]] = {}
         self._nick_edit_last_ts: dict[tuple[int, int], float] = {}
 
+        # anti-spam memory guards
+        self._warning_sent: set[tuple[int, int, int]] = set()          # (streak_id, day_key, user_id)
+        self._restore_sent: set[tuple[int, int, int]] = set()          # (streak_id, day_key, user_id)
+        self._restore_success_sent: set[tuple[int, int, int]] = set()  # (streak_id, day_key, user_id)
+        self._ice_sent: set[tuple[int, int, int]] = set()              # (streak_id, day_key, user_id)
+
         self.tick.start()
 
     def cog_unload(self):
         self.tick.cancel()
 
-    # ---------------- fire helpers ----------------
+    # ---------------- config helpers ----------------
 
     def _fire_enabled(self) -> bool:
         return bool(getattr(self.settings, "nickname_fire_enabled", True))
@@ -45,6 +64,17 @@ class VcTrackerCog(commands.Cog):
 
     def _nick_edit_min_interval(self) -> float:
         return float(getattr(self.settings, "nickname_edit_min_interval_seconds", 20))
+
+    def _restore_enabled(self) -> bool:
+        return bool(getattr(self.settings, "streak_restore_enabled", True))
+
+    def _restore_window_minutes(self) -> int:
+        return int(getattr(self.settings, "streak_restore_window_minutes", 120))
+
+    def _day_warning_minutes(self) -> int:
+        return int(getattr(self.settings, "streak_end_warning_minutes", 60))
+
+    # ---------------- fire helpers ----------------
 
     def _has_fire_text(self, text: str | None) -> bool:
         return bool(text and text.endswith(self._fire_suffix()))
@@ -281,6 +311,204 @@ class VcTrackerCog(commands.Cog):
 
         return effective
 
+    # ---------------- streak day time helpers ----------------
+
+    def _get_day_timing(self, default_tz: str, grace_hour: int) -> tuple[int, int]:
+        """
+        Returns:
+        - current streak-day start unix ts
+        - next streak-day boundary unix ts
+        """
+        tz = ZoneInfo(default_tz)
+        local_now = datetime.now(tz)
+
+        shifted = local_now - timedelta(hours=grace_hour)
+        shifted_day_start = shifted.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_day_start = shifted_day_start + timedelta(hours=grace_hour)
+        next_day_start = current_day_start + timedelta(days=1)
+
+        return int(current_day_start.timestamp()), int(next_day_start.timestamp())
+
+    def _seconds_until_day_end(self, default_tz: str, grace_hour: int) -> int:
+        _, next_day_ts = self._get_day_timing(default_tz, grace_hour)
+        return max(0, int(next_day_ts - now_utc_ts()))
+
+    def _minutes_since_day_start(self, default_tz: str, grace_hour: int) -> int:
+        current_day_ts, _ = self._get_day_timing(default_tz, grace_hour)
+        return max(0, int((now_utc_ts() - current_day_ts) // 60))
+
+    # ---------------- DM helpers ----------------
+
+    async def _user_dm_enabled(
+        self,
+        guild_id: int,
+        user_id: int,
+        *,
+        specific_key: str | None = None,
+    ) -> bool:
+        defaults = await self.repos.get_effective_config(guild_id, self.settings)
+
+        master_on = await self.repos.get_user_setting_bool(
+            guild_id=guild_id,
+            user_id=user_id,
+            key="dm_reminders_enabled",
+            default=bool(defaults.get("dm_reminders_enabled", True)),
+        )
+        if not master_on:
+            return False
+
+        if specific_key is None:
+            return True
+
+        default_map = {
+            "dm_streak_end_enabled": bool(defaults.get("dm_streak_end_enabled", True)),
+            "dm_streak_end_restore_enabled": bool(defaults.get("dm_streak_end_restore_enabled", True)),
+            "dm_streak_end_ice_enabled": bool(defaults.get("dm_streak_end_ice_enabled", True)),
+        }
+
+        return await self.repos.get_user_setting_bool(
+            guild_id=guild_id,
+            user_id=user_id,
+            key=specific_key,
+            default=default_map.get(specific_key, True),
+        )
+
+    def _other_member_label(self, guild: discord.Guild, target_user_id: int) -> str | None:
+        member = guild.get_member(target_user_id)
+        if member is None:
+            return None
+        return member.display_name
+
+    async def _send_embed_dm(
+        self,
+        guild: discord.Guild,
+        user_id: int,
+        embed: discord.Embed,
+        *,
+        specific_key: str | None = None,
+    ) -> None:
+        if not await self._user_dm_enabled(guild.id, user_id, specific_key=specific_key):
+            return
+
+        member = guild.get_member(user_id)
+        if member is None or member.bot:
+            return
+
+        try:
+            await member.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            return
+
+    async def _send_restore_available_dm(
+        self,
+        guild: discord.Guild,
+        streak_id: int,
+        current_day_key: int,
+        user_a: int,
+        user_b: int,
+        minutes_left: int,
+    ) -> None:
+        for user_id, other_id in ((user_a, user_b), (user_b, user_a)):
+            dm_key = (streak_id, current_day_key, user_id)
+            if dm_key in self._restore_sent:
+                continue
+
+            duo_label = self._other_member_label(guild, other_id)
+            embed = streak_restore_available_embed(
+                guild,
+                duo_label=duo_label,
+                minutes_left=minutes_left,
+            )
+            await self._send_embed_dm(
+                guild,
+                user_id,
+                embed,
+                specific_key="dm_streak_end_restore_enabled",
+            )
+            self._restore_sent.add(dm_key)
+
+    async def _send_restore_success_dm(
+        self,
+        guild: discord.Guild,
+        streak_id: int,
+        current_day_key: int,
+        user_a: int,
+        user_b: int,
+        current_streak: int,
+    ) -> None:
+        for user_id, other_id in ((user_a, user_b), (user_b, user_a)):
+            dm_key = (streak_id, current_day_key, user_id)
+            if dm_key in self._restore_success_sent:
+                continue
+
+            duo_label = self._other_member_label(guild, other_id)
+            embed = restore_success_embed(
+                guild,
+                duo_label=duo_label,
+                current_streak=current_streak,
+            )
+            await self._send_embed_dm(
+                guild,
+                user_id,
+                embed,
+                specific_key="dm_streak_end_restore_enabled",
+            )
+            self._restore_success_sent.add(dm_key)
+
+    async def _send_ice_dm(
+        self,
+        guild: discord.Guild,
+        streak_id: int,
+        current_day_key: int,
+        user_a: int,
+        user_b: int,
+    ) -> None:
+        for user_id, other_id in ((user_a, user_b), (user_b, user_a)):
+            dm_key = (streak_id, current_day_key, user_id)
+            if dm_key in self._ice_sent:
+                continue
+
+            duo_label = self._other_member_label(guild, other_id)
+            embed = streak_lost_embed(
+                guild,
+                duo_label=duo_label,
+            )
+            await self._send_embed_dm(
+                guild,
+                user_id,
+                embed,
+                specific_key="dm_streak_end_ice_enabled",
+            )
+            self._ice_sent.add(dm_key)
+
+    async def _send_end_of_day_warning_dm(
+        self,
+        guild: discord.Guild,
+        streak_id: int,
+        current_day_key: int,
+        user_a: int,
+        user_b: int,
+        remaining_seconds: int,
+    ) -> None:
+        for user_id, other_id in ((user_a, user_b), (user_b, user_a)):
+            dm_key = (streak_id, current_day_key, user_id)
+            if dm_key in self._warning_sent:
+                continue
+
+            duo_label = self._other_member_label(guild, other_id)
+            embed = end_of_day_warning_embed(
+                guild,
+                duo_label=duo_label,
+                remaining_seconds=remaining_seconds,
+            )
+            await self._send_embed_dm(
+                guild,
+                user_id,
+                embed,
+                specific_key=None,
+            )
+            self._warning_sent.add(dm_key)
+
     # ---------------- fire state ----------------
 
     async def _duo_has_active_streak(self, guild_id: int, user_a: int, user_b: int) -> bool:
@@ -333,6 +561,155 @@ class VcTrackerCog(commands.Cog):
                 result.add(user_b)
 
         return result
+
+    # ---------------- reminder / restore sweep ----------------
+
+    async def _process_streak_notifications_for_guild(self, guild: discord.Guild) -> None:
+        guild_id = guild.id
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+
+        default_tz = str(cfg.get("default_tz", self.settings.default_tz))
+        grace_hour = int(cfg.get("grace_hour_local", self.settings.grace_hour_local))
+        min_required = int(cfg.get("min_overlap_seconds", self.settings.min_overlap_seconds))
+
+        today_key = day_key_from_utc_ts(now_utc_ts(), default_tz, grace_hour)
+        seconds_left_today = self._seconds_until_day_end(default_tz, grace_hour)
+        minutes_since_day_start = self._minutes_since_day_start(default_tz, grace_hour)
+        restore_window_minutes = self._restore_window_minutes()
+        warning_seconds = self._day_warning_minutes() * 60
+
+        rows = await self.repos.top_by_current_streak(
+            guild_id=guild_id,
+            limit=1000,
+            streak_type="duo",
+        )
+
+        for row in rows:
+            current = int(row["current_streak"])
+            if current <= 0:
+                continue
+
+            streak_id = int(row["streak_id"])
+            member_ids = await self.repos.get_streak_members(streak_id)
+            if len(member_ids) != 2:
+                continue
+
+            user_a, user_b = sorted(int(x) for x in member_ids)
+
+            state = await self.repos.get_streak_state(streak_id)
+            if state is None:
+                continue
+
+            current = int(state["current_streak"])
+            longest = int(state["longest_streak"])
+            total_completed_days = int(state["total_completed_days"])
+            last_completed = int(state["last_completed_day_key"])
+
+            progress_row = await self.repos.get_progress_row(streak_id, today_key)
+            today_seconds = 0 if progress_row is None else int(progress_row["progress_seconds"])
+
+            # normal active day: they qualified yesterday, still need today
+            if last_completed == today_key - 1:
+                if 0 < seconds_left_today <= warning_seconds and today_seconds < min_required:
+                    remaining_seconds = max(0, min_required - today_seconds)
+                    await self._send_end_of_day_warning_dm(
+                        guild,
+                        streak_id,
+                        today_key,
+                        user_a,
+                        user_b,
+                        remaining_seconds,
+                    )
+                continue
+
+            # restore-pending day:
+            # they missed the previous streak day, but can still rescue during restore window
+            if self._restore_enabled() and last_completed == today_key - 2:
+                within_restore = minutes_since_day_start < restore_window_minutes
+
+                if today_seconds >= min_required and within_restore:
+                    new_current = current + 1
+                    new_longest = max(longest, new_current)
+
+                    await self.repos.set_day_qualified(
+                        streak_id=streak_id,
+                        guild_id=guild_id,
+                        day_key=today_key,
+                        qualified=True,
+                        now_ts=now_utc_ts(),
+                    )
+
+                    await self.repos.save_streak_state(
+                        streak_id=streak_id,
+                        guild_id=guild_id,
+                        current_streak=new_current,
+                        longest_streak=new_longest,
+                        total_completed_days=total_completed_days + 1,
+                        last_completed_day_key=today_key,
+                        now_ts=now_utc_ts(),
+                    )
+
+                    await self._send_restore_success_dm(
+                        guild,
+                        streak_id,
+                        today_key,
+                        user_a,
+                        user_b,
+                        new_current,
+                    )
+                    continue
+
+                if within_restore:
+                    minutes_left = max(1, restore_window_minutes - minutes_since_day_start)
+                    await self._send_restore_available_dm(
+                        guild,
+                        streak_id,
+                        today_key,
+                        user_a,
+                        user_b,
+                        minutes_left,
+                    )
+                    continue
+
+                # restore expired -> streak dies
+                await self.repos.save_streak_state(
+                    streak_id=streak_id,
+                    guild_id=guild_id,
+                    current_streak=0,
+                    longest_streak=longest,
+                    total_completed_days=total_completed_days,
+                    last_completed_day_key=last_completed,
+                    now_ts=now_utc_ts(),
+                )
+
+                await self._send_ice_dm(
+                    guild,
+                    streak_id,
+                    today_key,
+                    user_a,
+                    user_b,
+                )
+                continue
+
+            # stale old streak safety cleanup
+            if last_completed <= today_key - 3 and current > 0:
+                await self.repos.save_streak_state(
+                    streak_id=streak_id,
+                    guild_id=guild_id,
+                    current_streak=0,
+                    longest_streak=longest,
+                    total_completed_days=total_completed_days,
+                    last_completed_day_key=last_completed,
+                    now_ts=now_utc_ts(),
+                )
+
+                await self._send_ice_dm(
+                    guild,
+                    streak_id,
+                    today_key,
+                    user_a,
+                    user_b,
+                )
 
     # ---------------- tick loop ----------------
 
@@ -388,6 +765,10 @@ class VcTrackerCog(commands.Cog):
                     min_required_seconds=min_required,
                     daily_cap_seconds=daily_cap_seconds,
                 )
+
+        # process reminder/restore/lost flow after progress updates
+        for guild in self.bot.guilds:
+            await self._process_streak_notifications_for_guild(guild)
 
         guild_ids_to_sync = guild_ids_seen | set(self._fire_active.keys()) | {g.id for g in self.bot.guilds}
 
