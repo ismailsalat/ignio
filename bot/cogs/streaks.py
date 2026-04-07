@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands
+from zoneinfo import ZoneInfo
 
 from bot.core.timecore import now_utc_ts, day_key_from_utc_ts
 from bot.ui.formatting import duo_status_embed
@@ -157,6 +158,102 @@ class StreaksCog(commands.Cog):
                 parts.append(f"`{label}` — {self._fmt_hms(secs)}")
         return "\n".join(parts)
 
+    def _fmt_clock(self, dt_local: datetime) -> str:
+        return dt_local.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+
+    def _compute_cycle_times(
+        self,
+        *,
+        now_ts: int,
+        default_tz: str,
+        grace_hour_local: int,
+        warning_minutes: int,
+        restore_minutes: int,
+    ) -> dict:
+        tz = ZoneInfo(default_tz)
+        now_local = datetime.fromtimestamp(now_ts, tz=timezone.utc).astimezone(tz)
+
+        cutoff_today = now_local.replace(
+            hour=int(grace_hour_local),
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        if now_local < cutoff_today:
+            streak_end_local = cutoff_today
+        else:
+            streak_end_local = cutoff_today + timedelta(days=1)
+
+        warning_start_local = streak_end_local - timedelta(minutes=max(0, int(warning_minutes)))
+        restore_end_local = streak_end_local + timedelta(minutes=max(0, int(restore_minutes)))
+
+        return {
+            "now_local": now_local,
+            "streak_end_local": streak_end_local,
+            "warning_start_local": warning_start_local,
+            "restore_end_local": restore_end_local,
+            "seconds_until_streak_end": int((streak_end_local - now_local).total_seconds()),
+            "seconds_until_warning": int((warning_start_local - now_local).total_seconds()),
+            "seconds_until_restore_end": int((restore_end_local - now_local).total_seconds()),
+        }
+
+    async def _get_time_status_data(self, guild_id: int) -> dict:
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+
+        default_tz = str(cfg.get("default_tz", self.settings.default_tz))
+        grace_hour_local = int(cfg.get("grace_hour_local", self.settings.grace_hour_local))
+        warning_minutes = int(
+            cfg.get(
+                "streak_end_warning_minutes",
+                getattr(self.settings, "streak_end_warning_minutes", 60),
+            )
+        )
+        restore_minutes = int(
+            cfg.get(
+                "streak_restore_window_minutes",
+                getattr(self.settings, "streak_restore_window_minutes", 120),
+            )
+        )
+        restore_enabled = bool(cfg.get("streak_restore_enabled", 1))
+
+        info = self._compute_cycle_times(
+            now_ts=now_utc_ts(),
+            default_tz=default_tz,
+            grace_hour_local=grace_hour_local,
+            warning_minutes=warning_minutes,
+            restore_minutes=restore_minutes,
+        )
+
+        return {
+            "default_tz": default_tz,
+            "restore_enabled": restore_enabled,
+            "now_local": info["now_local"],
+            "streak_end_local": info["streak_end_local"],
+            "warning_start_local": info["warning_start_local"],
+            "restore_end_local": info["restore_end_local"],
+            "seconds_until_streak_end": max(0, int(info["seconds_until_streak_end"])),
+            "seconds_until_warning": int(info["seconds_until_warning"]),
+            "seconds_until_restore_end": max(0, int(info["seconds_until_restore_end"])),
+        }
+
+    async def _send_time_only(self, ctx: commands.Context):
+        data = await self._get_time_status_data(ctx.guild.id)
+
+        lines = [
+            "**Streak Time**",
+            f"• ends at `{self._fmt_clock(data['streak_end_local'])}`",
+            f"• ends in `{self._fmt_hms(data['seconds_until_streak_end'])}`",
+        ]
+
+        if data["restore_enabled"]:
+            lines.append(
+                f"• restore ends `{self._fmt_clock(data['restore_end_local'])}` "
+                f"(`{self._fmt_hms(data['seconds_until_restore_end'])}` left)"
+            )
+
+        await ctx.reply("\n".join(lines))
+
     async def _build_duo_profile_embed(
         self,
         ctx: commands.Context,
@@ -196,6 +293,8 @@ class StreaksCog(commands.Cog):
             heatmap_day_to_secs=month_map,
             heatmap_met_emoji=heat_met,
             heatmap_empty_emoji=heat_empty,
+            ends_in_text=None,
+            restore_in_text=None,
         )
 
         if first_active_key is not None or last_active_key is not None:
@@ -429,6 +528,13 @@ class StreaksCog(commands.Cog):
         day_map = await self._get_month_day_map(streak_id, today.year, today.month)
         connection_score_seconds = sum(day_map.values())
 
+        time_data = await self._get_time_status_data(gid)
+
+        ends_in_text = self._fmt_hms(time_data["seconds_until_streak_end"])
+        restore_in_text = None
+        if time_data["restore_enabled"]:
+            restore_in_text = self._fmt_hms(time_data["seconds_until_restore_end"])
+
         embed = duo_status_embed(
             user_a=user_a,
             user_b=user_b,
@@ -442,6 +548,8 @@ class StreaksCog(commands.Cog):
             heatmap_day_to_secs=day_map,
             heatmap_met_emoji=heat_met,
             heatmap_empty_emoji=heat_empty,
+            ends_in_text=ends_in_text,
+            restore_in_text=restore_in_text,
         )
         await ctx.reply(embed=embed)
 
@@ -453,6 +561,7 @@ class StreaksCog(commands.Cog):
         """
         !streak
         !streak live
+        !streak time
         !streak help
         !streak @user
         !streak @user1 @user2
@@ -479,6 +588,9 @@ class StreaksCog(commands.Cog):
             if other is None:
                 return await self._vc_requirements_fail(ctx, mode_label="`streak live`")
             return await self._send_duo_embed(ctx, ctx.author, other)
+
+        if text == "time":
+            return await self._send_time_only(ctx)
 
         mentions = ctx.message.mentions
         head = args[0].lower()
@@ -512,3 +624,9 @@ class StreaksCog(commands.Cog):
             return await self._send_duo_embed(ctx, mentions[0], mentions[1])
 
         return await self._send_streak_help(ctx)
+
+
+async def setup(bot: commands.Bot):
+    settings = getattr(bot, "settings", None)
+    repos = getattr(bot, "repos", None)
+    await bot.add_cog(StreaksCog(bot, settings, repos))

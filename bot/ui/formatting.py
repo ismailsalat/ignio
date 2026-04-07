@@ -1,4 +1,3 @@
-# bot/ui/formatting.py
 from __future__ import annotations
 
 import calendar
@@ -152,8 +151,8 @@ def _heatmap_block(
 
     body = f"```{body}```"
 
-    legend_done = _emoji(guild, "fire", "🔥")
-    legend_empty = _emoji(guild, "dot", "▫️")
+    legend_done = str(heatmap_met_emoji or _emoji(guild, "fire", "🔥"))
+    legend_empty = str(heatmap_empty_emoji or _emoji(guild, "dot", "▫️"))
 
     parts: list[str] = []
     if month_label:
@@ -162,6 +161,22 @@ def _heatmap_block(
     parts.append(f"{legend_done} met day  •  {legend_empty} not met")
 
     return "\n".join(parts)
+
+
+def _timing_lines(
+    *,
+    ends_in_text: str | None,
+    restore_in_text: str | None,
+) -> str:
+    lines: list[str] = []
+
+    if ends_in_text:
+        lines.append(f"**Ends in:** `{ends_in_text}`")
+
+    if restore_in_text:
+        lines.append(f"**Restore:** `{restore_in_text}` left")
+
+    return "\n".join(lines)
 
 
 def duo_status_embed(
@@ -178,6 +193,8 @@ def duo_status_embed(
     heatmap_day_to_secs: dict[int, int],
     heatmap_met_emoji: str,
     heatmap_empty_emoji: str,
+    ends_in_text: str | None = None,
+    restore_in_text: str | None = None,
 ) -> discord.Embed:
     guild = getattr(user_a, "guild", None)
 
@@ -209,13 +226,22 @@ def duo_status_embed(
         ),
     )
 
+    today_lines = [
+        f"`{bar}` **{percent}**",
+        f"**Progress:** `{fmt_hms(today_seconds)}` / `{fmt_hms(min_required)}`",
+        f"**Left today:** `{fmt_hms(remaining_today)}`",
+    ]
+
+    timing_block = _timing_lines(
+        ends_in_text=ends_in_text,
+        restore_in_text=restore_in_text,
+    )
+    if timing_block:
+        today_lines.append(timing_block)
+
     embed.add_field(
         name=f"{clock} Today",
-        value=(
-            f"`{bar}` **{percent}**\n"
-            f"**Progress:** `{fmt_hms(today_seconds)}` / `{fmt_hms(min_required)}`\n"
-            f"**Left:** `{fmt_hms(remaining_today)}`"
-        ),
+        value="\n".join(today_lines),
         inline=False,
     )
 

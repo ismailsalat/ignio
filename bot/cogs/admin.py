@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands
@@ -161,6 +162,110 @@ class AdminCog(commands.Cog):
         else:
             await self.repos.set_guild_setting_int(guild_id=guild_id, key=key, value=1 if value else 0, now_ts=now_ts)
 
+    def _fmt_clock(self, dt_local: datetime) -> str:
+        return dt_local.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+
+    def _fmt_countdown(self, seconds_left: int) -> str:
+        seconds_left = max(0, int(seconds_left))
+        hours = seconds_left // 3600
+        minutes = (seconds_left % 3600) // 60
+
+        if hours > 0 and minutes > 0:
+            return f"{hours}h {minutes}m"
+        if hours > 0:
+            return f"{hours}h"
+        return f"{minutes}m"
+
+    def _compute_cycle_times(
+        self,
+        *,
+        now_ts: int,
+        default_tz: str,
+        grace_hour_local: int,
+        warning_minutes: int,
+        restore_minutes: int,
+    ) -> dict:
+        tz = ZoneInfo(default_tz)
+        now_local = datetime.fromtimestamp(now_ts, tz=timezone.utc).astimezone(tz)
+
+        grace_hour_local = int(grace_hour_local)
+        cutoff_today = now_local.replace(
+            hour=grace_hour_local,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        if now_local < cutoff_today:
+            streak_end_local = cutoff_today
+        else:
+            streak_end_local = cutoff_today + timedelta(days=1)
+
+        warning_start_local = streak_end_local - timedelta(minutes=max(0, int(warning_minutes)))
+        restore_end_local = streak_end_local + timedelta(minutes=max(0, int(restore_minutes)))
+
+        return {
+            "now_local": now_local,
+            "streak_end_local": streak_end_local,
+            "warning_start_local": warning_start_local,
+            "restore_end_local": restore_end_local,
+            "seconds_until_streak_end": int((streak_end_local - now_local).total_seconds()),
+            "seconds_until_warning": int((warning_start_local - now_local).total_seconds()),
+            "seconds_until_restore_end": int((restore_end_local - now_local).total_seconds()),
+        }
+
+    async def _build_time_text(self, guild_id: int) -> str:
+        cfg = await self.repos.get_effective_config(guild_id, self.settings)
+
+        default_tz = str(cfg.get("default_tz", self.settings.default_tz))
+        grace_hour_local = int(cfg.get("grace_hour_local", self.settings.grace_hour_local))
+        warning_minutes = int(
+            cfg.get(
+                "streak_end_warning_minutes",
+                getattr(self.settings, "streak_end_warning_minutes", 60),
+            )
+        )
+        restore_minutes = int(
+            cfg.get(
+                "streak_restore_window_minutes",
+                getattr(self.settings, "streak_restore_window_minutes", 120),
+            )
+        )
+        restore_enabled = bool(cfg.get("streak_restore_enabled", 1))
+
+        info = self._compute_cycle_times(
+            now_ts=now_utc_ts(),
+            default_tz=default_tz,
+            grace_hour_local=grace_hour_local,
+            warning_minutes=warning_minutes,
+            restore_minutes=restore_minutes,
+        )
+
+        warning_text = (
+            "active now"
+            if info["seconds_until_warning"] <= 0
+            else f"in `{self._fmt_countdown(info['seconds_until_warning'])}`"
+        )
+
+        lines = [
+            "**Ignio Time**",
+            f"• now: `{self._fmt_clock(info['now_local'])}`",
+            f"• timezone: `{default_tz}`",
+            f"• streak day ends: `{self._fmt_clock(info['streak_end_local'])}`",
+            f"• ends in: `{self._fmt_countdown(info['seconds_until_streak_end'])}`",
+            f"• warning starts: `{self._fmt_clock(info['warning_start_local'])}` ({warning_text})",
+        ]
+
+        if restore_enabled:
+            lines.append(
+                f"• restore ends: `{self._fmt_clock(info['restore_end_local'])}` "
+                f"(in `{self._fmt_countdown(info['seconds_until_restore_end'])}`)"
+            )
+        else:
+            lines.append("• restore: `disabled`")
+
+        return "\n".join(lines)
+
     # ============================================================
     # admin hub
     # ============================================================
@@ -285,6 +390,12 @@ class AdminCog(commands.Cog):
     @admin_or_owner()
     async def admin_daykey(self, ctx: commands.Context):
         return await self.day_key_cmd(ctx)
+
+    @admin_group.command(name="time")
+    @commands.guild_only()
+    @admin_or_owner()
+    async def admin_time(self, ctx: commands.Context):
+        return await self.time_status(ctx)
 
     # ---------------- db ----------------
 
@@ -738,6 +849,19 @@ class AdminCog(commands.Cog):
                 f"• grace_hour_local: `{cfg['grace_hour_local']}`\n"
                 f"• day_key: `{day_key}`"
             )
+            await ctx.reply(msg)
+        except Exception as err:
+            await self._fail(ctx, err)
+
+    @commands.command(name="time_status", hidden=True)
+    @commands.guild_only()
+    @admin_or_owner()
+    async def time_status(self, ctx: commands.Context):
+        try:
+            if not self._require_repos():
+                return await ctx.reply("repos not available on AdminCog.")
+
+            msg = await self._build_time_text(ctx.guild.id)
             await ctx.reply(msg)
         except Exception as err:
             await self._fail(ctx, err)
