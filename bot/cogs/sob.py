@@ -41,11 +41,10 @@ def _rank_display(count: int, rank: int) -> str:
 
 
 def _leader_line(guild: discord.Guild, data: dict | None, badge: str = "") -> str:
-    """badge replaces the default sob emoji on the left."""
     if data is None:
         return "—"
-    name   = _mention(guild, data["user_id"])
-    icon   = badge if badge else _SOB
+    name  = _mention(guild, data["user_id"])
+    icon  = badge if badge else _SOB
     return f"{icon} {name} · **{data['count']}**"
 
 
@@ -135,7 +134,6 @@ def _leaderboard_embed(
         color=_COLOR,
     )
 
-    # today + week get the normal sob emoji, all-time gets the tomato
     embed.add_field(
         name="Today",
         value=_leader_line(guild, daily_leader),
@@ -187,53 +185,78 @@ class SobCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return None
 
+    # ── reaction events ───────────────────────────────────────────────
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        # ── DEBUG ──────────────────────────────────────────────────────
+        emoji = payload.emoji
+        print(f"[SOB DEBUG ADD] name={getattr(emoji, 'name', None)!r} id={getattr(emoji, 'id', None)} str={str(emoji)!r} is_custom={emoji.is_custom_emoji()} guild_id={payload.guild_id} user_id={payload.user_id}")
+        print(f"[SOB DEBUG ADD] SOB_EMOJIS={SOB_EMOJIS}")
+        print(f"[SOB DEBUG ADD] match={self._is_sob_emoji(emoji)}")
+        # ── END DEBUG ──────────────────────────────────────────────────
+
         if not self._is_sob_emoji(payload.emoji):
+            print(f"[SOB DEBUG ADD] SKIPPED — emoji did not match")
             return
         if payload.guild_id is None:
+            print(f"[SOB DEBUG ADD] SKIPPED — no guild_id")
             return
 
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
+            print(f"[SOB DEBUG ADD] SKIPPED — guild not found")
             return
 
         reactor = guild.get_member(payload.user_id)
         if reactor is None or reactor.bot:
+            print(f"[SOB DEBUG ADD] SKIPPED — reactor is None or bot: {reactor}")
             return
 
         channel = guild.get_channel(payload.channel_id)
         message = await self._resolve_message(channel, payload.message_id)
         if message is None:
+            print(f"[SOB DEBUG ADD] SKIPPED — message not found channel={payload.channel_id} msg={payload.message_id}")
             return
         if message.author.bot:
+            print(f"[SOB DEBUG ADD] SKIPPED — message author is bot: {message.author}")
             return
 
         target_id = message.author.id
         if target_id == payload.user_id:
+            print(f"[SOB DEBUG ADD] SKIPPED — self reaction")
             return
 
         threshold = await self.sob_repo.get_snitch_threshold(payload.guild_id)
-        await self.sob_repo.add_sob(
+        result = await self.sob_repo.add_sob(
             guild_id=payload.guild_id,
             message_id=payload.message_id,
             reactor_id=payload.user_id,
             target_id=target_id,
             snitch_threshold=threshold,
         )
+        print(f"[SOB DEBUG ADD] add_sob result={result} reactor={payload.user_id} target={target_id} msg={payload.message_id}")
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
+        # ── DEBUG ──────────────────────────────────────────────────────
+        emoji = payload.emoji
+        print(f"[SOB DEBUG REMOVE] name={getattr(emoji, 'name', None)!r} id={getattr(emoji, 'id', None)} str={str(emoji)!r} match={self._is_sob_emoji(emoji)}")
+        # ── END DEBUG ──────────────────────────────────────────────────
+
         if not self._is_sob_emoji(payload.emoji):
             return
         if payload.guild_id is None:
             return
 
-        await self.sob_repo.remove_sob(
+        result = await self.sob_repo.remove_sob(
             guild_id=payload.guild_id,
             message_id=payload.message_id,
             reactor_id=payload.user_id,
         )
+        print(f"[SOB DEBUG REMOVE] remove_sob result={result} reactor={payload.user_id} msg={payload.message_id}")
+
+    # ── !sob group ────────────────────────────────────────────────────
 
     @commands.group(name="sob", invoke_without_command=True)
     @commands.guild_only()
@@ -249,6 +272,8 @@ class SobCog(commands.Cog):
         rank_alltime = await self.sob_repo.get_user_alltime_rank(guild.id, user.id)
         snitch_row   = await self.sob_repo.get_snitch_row(guild.id, user.id)
 
+        print(f"[SOB DEBUG CMD] !sob by user={user.id} stats={stats}")
+
         embed = _personal_embed(
             user=user,
             stats=stats,
@@ -261,6 +286,8 @@ class SobCog(commands.Cog):
         )
         await ctx.reply(embed=embed)
 
+    # ── !sob lb ───────────────────────────────────────────────────────
+
     @sob_group.command(name="lb", aliases=["leaderboard"])
     @commands.guild_only()
     async def sob_lb(self, ctx: commands.Context):
@@ -272,6 +299,8 @@ class SobCog(commands.Cog):
         top_giver      = await self.sob_repo.get_top_giver(guild.id)
         top_snitch     = await self.sob_repo.get_top_snitch(guild.id)
 
+        print(f"[SOB DEBUG CMD] !sob lb guild={guild.id} daily={daily_leader} weekly={weekly_leader} alltime={alltime_leader}")
+
         embed = _leaderboard_embed(
             guild=guild,
             daily_leader=daily_leader,
@@ -281,6 +310,8 @@ class SobCog(commands.Cog):
             top_snitch=top_snitch,
         )
         await ctx.reply(embed=embed)
+
+    # ── !ss ───────────────────────────────────────────────────────────
 
     @commands.command(name="ss", aliases=["sobsnitch"])
     @commands.guild_only()
@@ -308,13 +339,19 @@ class SobCog(commands.Cog):
             await ctx.reply(f"{_ANTI} You can't snitch your own message.", mention_author=False)
             return
 
+        target_id = target_msg.author.id
+
+        print(f"[SOB DEBUG SS] snitcher={user.id} target={target_id} msg={target_msg.id}")
+
         success, reason, sobs_removed = await self.sob_repo.snitch_message(
             guild_id=guild.id,
             message_id=target_msg.id,
             snitcher_id=user.id,
-            target_id=target_msg.author.id,
+            target_id=target_id,
             now_ts=now_ts,
         )
+
+        print(f"[SOB DEBUG SS] result={success} reason={reason} sobs_removed={sobs_removed}")
 
         if success:
             threshold    = await self.sob_repo.get_snitch_threshold(guild.id)
