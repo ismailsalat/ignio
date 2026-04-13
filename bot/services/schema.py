@@ -28,7 +28,7 @@ MIGRATIONS = [
             size INTEGER NOT NULL CHECK (size >= 2 AND size <= 5),
             required_count INTEGER NOT NULL CHECK (required_count >= 2 AND required_count <= size),
 
-            member_hash TEXT, -- prevents duplicate groups
+            member_hash TEXT,
 
             is_active INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL,
@@ -179,5 +179,88 @@ MIGRATIONS = [
         CREATE INDEX IF NOT EXISTS idx_streak_logs_guild_type
         ON streak_activity_logs(guild_id, event_type);
         """
-    )
+    ),
+    (
+        2,
+        "add_sob_system",
+        """
+        CREATE TABLE IF NOT EXISTS sob_stats (
+            guild_id   INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            sobs_received_alltime INTEGER NOT NULL DEFAULT 0,
+            sobs_given_alltime    INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+
+            PRIMARY KEY (guild_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sob_daily (
+            guild_id   INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            day_key    INTEGER NOT NULL,
+            sobs_received INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+
+            PRIMARY KEY (guild_id, user_id, day_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS sob_weekly (
+            guild_id   INTEGER NOT NULL,
+            user_id    INTEGER NOT NULL,
+            week_key   INTEGER NOT NULL,
+            sobs_received INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL,
+
+            PRIMARY KEY (guild_id, user_id, week_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS sob_reactions (
+            guild_id   INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            reactor_id INTEGER NOT NULL,
+            target_id  INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+
+            PRIMARY KEY (guild_id, message_id, reactor_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sob_daily_guild_day
+        ON sob_daily(guild_id, day_key, sobs_received DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_sob_weekly_guild_week
+        ON sob_weekly(guild_id, week_key, sobs_received DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_sob_stats_guild_received
+        ON sob_stats(guild_id, sobs_received_alltime DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_sob_stats_guild_given
+        ON sob_stats(guild_id, sobs_given_alltime DESC);
+        """
+    ),
+    (
+        3,
+        "add_sob_snitch",
+        """
+        -- Tracks snitch token state per user per guild
+        -- token_available: 1 = has a token ready to use, 0 = no token
+        -- sobs_at_last_grant: alltime sob count when token was last granted
+        --   (used to know when they've earned the next one)
+        -- token_granted_at: unix ts when token was granted (for 7-day expiry)
+        -- total_snitches: lifetime snitch uses for leaderboard
+        CREATE TABLE IF NOT EXISTS sob_snitch (
+            guild_id           INTEGER NOT NULL,
+            user_id            INTEGER NOT NULL,
+            token_available    INTEGER NOT NULL DEFAULT 0,
+            sobs_at_last_grant INTEGER NOT NULL DEFAULT 0,
+            token_granted_at   INTEGER NOT NULL DEFAULT 0,
+            total_snitches     INTEGER NOT NULL DEFAULT 0,
+            updated_at         INTEGER NOT NULL,
+
+            PRIMARY KEY (guild_id, user_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sob_snitch_guild_total
+        ON sob_snitch(guild_id, total_snitches DESC);
+        """
+    ),
 ]
