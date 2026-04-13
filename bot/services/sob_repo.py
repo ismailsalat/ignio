@@ -7,14 +7,34 @@ from typing import Any
 
 from bot.services.db_manager import DatabaseManager
 
-# Both emoji names that count as a sob reaction
-SOB_EMOJIS: set[str] = {
-    "4612win11emojisob",  # <:4612win11emojisob:1493190644221480960>
-    "handsob",            # <:handsob:1493198316299747419>
-}
+# Only the standard Unicode sob emoji is tracked for reactions
+SOB_EMOJI_UNICODE = "\U0001f62d"  # 😭
+
+# Custom server emojis used for display only (in embeds)
+SOB_EMOJI_DISPLAY    = "<:4612win11emojisob:1493190644221480960>"
+SOB_HAND_DISPLAY     = "<:handsob:1493198316299747419>"
+SOB_TOMATO_DISPLAY   = "<:tomatosob:1493198299140722760>"
+SOB_ANTI_DISPLAY     = "<:antisob:1493198277674537071>"
 
 DEFAULT_SNITCH_THRESHOLD = 10
 SNITCH_EXPIRY_SECONDS    = 7 * 24 * 3600
+
+
+def is_sob_emoji(emoji) -> bool:
+    """
+    Returns True only for the standard 😭 emoji.
+    Accepts str, PartialEmoji, or Emoji objects.
+    """
+    if isinstance(emoji, str):
+        return emoji == SOB_EMOJI_UNICODE
+    # Custom emojis have an id — standard unicode emojis do not
+    if getattr(emoji, "id", None) is not None:
+        return False
+    # Check the name or string representation
+    name = getattr(emoji, "name", None)
+    if name is not None:
+        return name == SOB_EMOJI_UNICODE or name == "sob"
+    return str(emoji) == SOB_EMOJI_UNICODE
 
 
 def _today_keys() -> tuple[int, int]:
@@ -45,6 +65,10 @@ class SobRepo:
         target_id: int,
         snitch_threshold: int = DEFAULT_SNITCH_THRESHOLD,
     ) -> bool:
+        """
+        Record a 😭 reaction. One count per message per reactor.
+        Returns True if counted, False if duplicate.
+        """
         now_ts            = int(time.time())
         day_key, week_key = _today_keys()
         db                = await self._db()
@@ -58,7 +82,7 @@ class SobRepo:
             (guild_id, message_id, reactor_id, target_id, now_ts),
         )
         if cur.rowcount == 0:
-            return False
+            return False  # duplicate
 
         await db.execute(
             """
@@ -154,7 +178,7 @@ class SobRepo:
         return True
 
     # ------------------------------------------------------------------
-    # sob snitch — remove ALL sobs from a message
+    # sob snitch — wipe all sobs from a message
     # ------------------------------------------------------------------
 
     async def snitch_message(
@@ -166,29 +190,13 @@ class SobRepo:
         target_id: int,
         now_ts: int | None = None,
     ) -> tuple[bool, str, int]:
-        """
-        Use a snitch token to wipe all sobs from a message.
-
-        Returns (success, reason, sobs_removed).
-
-        Reasons on failure:
-          no_token     — snitcher has no token
-          expired      — token expired
-          own_message  — can't snitch your own message
-          bot_message  — can't snitch a bot's message
-          no_sobs      — no sob reactions tracked on this message
-          self_snitch  — snitcher is the message author (redundant safety)
-        """
         if now_ts is None:
             now_ts = int(time.time())
 
-        # Safety: can't snitch your own message
         if snitcher_id == target_id:
             return False, "own_message", 0
 
-        db = await self._db()
-
-        # ── token checks ──────────────────────────────────────────────
+        db         = await self._db()
         snitch_row = await self.get_snitch_row(guild_id, snitcher_id)
 
         if snitch_row is None or snitch_row["token_available"] == 0:
@@ -202,54 +210,44 @@ class SobRepo:
             await db.commit()
             return False, "expired", 0
 
-        # ── find all sob reactions on this message ────────────────────
         reaction_rows = await db.fetchall(
             "SELECT reactor_id FROM sob_reactions WHERE guild_id = ? AND message_id = ?",
             (guild_id, message_id),
         )
-
         if not reaction_rows:
             return False, "no_sobs", 0
 
-        sob_count  = len(reaction_rows)
+        sob_count         = len(reaction_rows)
         day_key, week_key = _today_keys()
 
-        # ── decrement reactor "given" counts (floor at 0) ─────────────
         for r in reaction_rows:
             await db.execute(
                 "UPDATE sob_stats SET sobs_given_alltime = MAX(0, sobs_given_alltime - 1), updated_at = ? WHERE guild_id = ? AND user_id = ?",
                 (now_ts, guild_id, int(r["reactor_id"])),
             )
 
-        # ── decrement target "received" counts (floor at 0) ───────────
-        # Decrement by sob_count but never below 0 — done individually
-        # to avoid a single bulk subtract going negative
         for _ in range(sob_count):
             await db.execute(
                 "UPDATE sob_stats SET sobs_received_alltime = MAX(0, sobs_received_alltime - 1), updated_at = ? WHERE guild_id = ? AND user_id = ?",
                 (now_ts, guild_id, target_id),
             )
+
         await db.execute(
-            "UPDATE sob_daily SET sobs_received = MAX(0, sobs_received - ?) , updated_at = ? WHERE guild_id = ? AND user_id = ? AND day_key = ?",
+            "UPDATE sob_daily SET sobs_received = MAX(0, sobs_received - ?), updated_at = ? WHERE guild_id = ? AND user_id = ? AND day_key = ?",
             (sob_count, now_ts, guild_id, target_id, day_key),
         )
         await db.execute(
             "UPDATE sob_weekly SET sobs_received = MAX(0, sobs_received - ?), updated_at = ? WHERE guild_id = ? AND user_id = ? AND week_key = ?",
             (sob_count, now_ts, guild_id, target_id, week_key),
         )
-
-        # ── delete all sob_reactions rows for this message ────────────
         await db.execute(
             "DELETE FROM sob_reactions WHERE guild_id = ? AND message_id = ?",
             (guild_id, message_id),
         )
-
-        # ── consume token, increment total_snitches ───────────────────
         await db.execute(
             "UPDATE sob_snitch SET token_available = 0, total_snitches = total_snitches + 1, updated_at = ? WHERE guild_id = ? AND user_id = ?",
             (now_ts, guild_id, snitcher_id),
         )
-
         await db.commit()
         return True, "ok", sob_count
 
