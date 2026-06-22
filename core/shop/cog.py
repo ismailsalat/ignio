@@ -1,0 +1,437 @@
+# core/shop/cog.py
+from __future__ import annotations
+
+import discord
+from discord.ext import commands
+
+from core.shop import embeds
+from core.shop.catalog import (
+    BUILTIN_ITEMS, CATEGORIES, TARGETED_EFFECTS, item_icon,
+)
+from core.time_utils import now_ts
+
+
+def _is_admin(ctx: commands.Context, settings) -> bool:
+    owner_ids = set(getattr(settings, "owner_ids", ()) or ())
+    if ctx.author.id in owner_ids:
+        return True
+    perms = getattr(ctx.author, "guild_permissions", None)
+    return bool(perms and (perms.administrator or perms.manage_guild))
+
+
+# ======================================================================
+# shared action helpers (used by both text commands and buttons)
+# ======================================================================
+
+async def do_buy(shop, sob_repo, guild_id, user_id, item_key, qty=1):
+    return await shop.buy(guild_id, user_id, item_key.lower(), qty)
+
+
+async def do_use(shop, guild_id, user, item_key, target=None):
+    """Returns (ok, embed). Handles built-in + custom (claim) items.
+    item_key may be a key or a display name."""
+    # resolve to canonical key
+    resolved = await shop.get_item(guild_id, item_key)
+    key = resolved["key"] if resolved else item_key.lower()
+    inv = await shop.get_inventory(guild_id, user.id)
+    if inv.get(key, 0) < 1:
+        return False, embeds.error_embed(f"You don't own a `{key}`.")
+
+    builtin = BUILTIN_ITEMS.get(key)
+    db = await shop._db()
+
+    # custom server item -> claim
+    if builtin is None:
+        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        await db.commit()
+        catalog = await shop.get_catalog(guild_id)
+        it = next((c for c in catalog if c["key"] == key), {"name": key, "icon": "🎁"})
+        return True, embeds.used_embed(
+            "Claim submitted",
+            f"{user.mention} is claiming **{it['icon']} {it['name']}**.\nAn admin will follow up to deliver it.",
+        )
+
+    effect_key = builtin["effect_key"]
+    duration = builtin.get("duration", 0)
+    expires_at = now_ts() + duration if duration else 0
+
+    if effect_key in TARGETED_EFFECTS:
+        if target is None:
+            return False, embeds.error_embed(f"`{key}` needs a target. Use `!use {key} @user`.")
+        if target.id == user.id:
+            return False, embeds.error_embed("You can't target yourself.")
+        if getattr(target, "bot", False):
+            return False, embeds.error_embed("You can't target a bot.")
+        if await shop.has_effect(guild_id, target.id, effect_key):
+            return False, embeds.error_embed(f"{target.mention} already has **{effect_key}** active.")
+        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        await db.commit()
+        await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id, expires_at=expires_at)
+        return True, embeds.used_embed(
+            f"{builtin['icon']} {builtin['name']} used",
+            f"{user.mention} froze {target.mention} for 30 minutes — no snitching for them.",
+        )
+
+    # self effect
+    if await shop.has_effect(guild_id, user.id, effect_key):
+        return False, embeds.error_embed(f"You already have **{effect_key}** active.")
+    await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+    await db.commit()
+    await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=expires_at)
+    verb = "You're protected from snitches" if effect_key == "shield" else "Your snitches are boosted"
+    return True, embeds.used_embed(f"{builtin['icon']} {builtin['name']} active", f"{verb} for 30 minutes.")
+
+
+# ======================================================================
+# interactive views
+# ======================================================================
+
+class ShopView(discord.ui.View):
+    """Top level: one button per category, plus My stuff."""
+
+    def __init__(self, cog, ctx, catalog):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.catalog = catalog
+        # a button per category that actually has enabled items (server always shown)
+        for cat_key, (icon, label) in CATEGORIES.items():
+            has_items = any(c["category"] == cat_key and c["enabled"] for c in catalog)
+            if has_items or cat_key == "server":
+                self.add_item(CategoryButton(cat_key, icon, label, disabled=not has_items))
+        self.add_item(MyStuffButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This menu isn't yours — run `!shop` yourself.", ephemeral=True)
+            return False
+        return True
+
+
+class CategoryButton(discord.ui.Button):
+    def __init__(self, cat_key, icon, label, disabled=False):
+        super().__init__(
+            label=label,
+            emoji=icon if len(icon) <= 2 else None,
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.cat_key = cat_key
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        items = [c for c in view.catalog if c["category"] == self.cat_key and c["enabled"]]
+        cat_view = CategoryView(view.cog, view.ctx, view.catalog, self.cat_key, items)
+        icon, label = CATEGORIES[self.cat_key]
+        await interaction.response.edit_message(
+            embed=embeds.category_embed(self.cat_key, items),
+            view=cat_view,
+        )
+
+
+class CategoryView(discord.ui.View):
+    """Inside a category: a buy button per item + Back."""
+
+    def __init__(self, cog, ctx, catalog, cat_key, items):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.ctx = ctx
+        self.catalog = catalog
+        for item in items[:23]:  # leave room for Back
+            self.add_item(BuyButton(item))
+        self.add_item(BackButton())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This menu isn't yours — run `!shop` yourself.", ephemeral=True)
+            return False
+        return True
+
+
+class BackButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Back", emoji="◀️", style=discord.ButtonStyle.secondary, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        stats = await view.cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        top = ShopView(view.cog, view.ctx, view.catalog)
+        await interaction.response.edit_message(
+            embed=embeds.shop_embed(interaction.guild.name, view.catalog, stats["sobs_alltime"]),
+            view=top,
+        )
+
+
+class BuyButton(discord.ui.Button):
+    def __init__(self, item):
+        super().__init__(
+            label=f"{item['name']} ({item['price']})",
+            emoji=item["icon"] if len(item["icon"]) <= 2 else None,
+            style=discord.ButtonStyle.success,
+        )
+        self.item_key = item["key"]
+
+    async def callback(self, interaction: discord.Interaction):
+        cog = self.view.cog
+        ok, reason, item = await do_buy(cog.shop, cog.sob_repo, interaction.guild.id, interaction.user.id, self.item_key)
+        if not ok:
+            msgs = {
+                "no_item": "That item doesn't exist.",
+                "disabled": "That item is disabled.",
+                "out_of_stock": "Out of stock.",
+                "not_enough_sobs": "Not enough sobs.",
+            }
+            await interaction.response.send_message(embed=embeds.error_embed(msgs.get(reason, "Couldn't buy that.")), ephemeral=True)
+            return
+        stats = await cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(
+            embed=embeds.buy_success_embed(interaction.user, item, 1, stats["sobs_alltime"]),
+            ephemeral=True,
+        )
+
+
+class MyStuffButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="My stuff", emoji="🎒", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction):
+        cog = self.view.cog
+        gid = interaction.guild.id
+        inv = await cog.shop.get_inventory(gid, interaction.user.id)
+        effs = await cog.shop.get_effects(gid, interaction.user.id)
+        catalog = await cog.shop.get_catalog(gid)
+        view = MyStuffView(cog, interaction.user, inv)
+        await interaction.response.send_message(
+            embed=embeds.my_stuff_embed(interaction.user, inv, effs, catalog),
+            view=view if inv else None,
+            ephemeral=True,
+        )
+
+
+class MyStuffView(discord.ui.View):
+    """Use buttons for each owned item."""
+
+    def __init__(self, cog, user, inventory):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.user = user
+        for key, qty in list(inventory.items())[:20]:
+            if qty > 0:
+                self.add_item(UseButton(cog, key))
+
+
+class UseButton(discord.ui.Button):
+    def __init__(self, cog, item_key):
+        builtin = BUILTIN_ITEMS.get(item_key)
+        label = builtin["name"] if builtin else item_key
+        icon = item_icon(item_key)
+        super().__init__(label=f"Use {label}", emoji=icon if len(icon) <= 2 else None, style=discord.ButtonStyle.success)
+        self.cog = cog
+        self.item_key = item_key
+
+    async def callback(self, interaction: discord.Interaction):
+        builtin = BUILTIN_ITEMS.get(self.item_key)
+        # targeted items can't be used from a button (need a target) -> tell them
+        if builtin and builtin["effect_key"] in TARGETED_EFFECTS:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(f"Use `!use {self.item_key} @user` to target someone."),
+                ephemeral=True,
+            )
+            return
+        ok, emb = await do_use(self.cog.shop, interaction.guild.id, interaction.user, self.item_key)
+        await interaction.response.send_message(embed=emb, ephemeral=True)
+
+
+# ======================================================================
+# cog
+# ======================================================================
+
+class ShopCog(commands.Cog):
+    def __init__(self, bot: commands.Bot, settings, shop_repo, sob_repo):
+        self.bot = bot
+        self.settings = settings
+        self.shop = shop_repo
+        self.sob_repo = sob_repo
+
+    # ---- shop browse (with buttons) ----
+
+    @commands.group(name="shop", aliases=["store"], invoke_without_command=True)
+    @commands.guild_only()
+    async def shop_group(self, ctx: commands.Context):
+        catalog = await self.shop.get_catalog(ctx.guild.id)
+        stats = await self.sob_repo.get_user_stats(ctx.guild.id, ctx.author.id)
+        view = ShopView(self, ctx, catalog)
+        await ctx.reply(embed=embeds.shop_embed(ctx.guild.name, catalog, stats["sobs_alltime"]), view=view)
+
+    # ---- buy (text, forgiving) ----
+
+    @commands.command(name="buy")
+    @commands.guild_only()
+    async def buy_cmd(self, ctx: commands.Context, *, args: str | None = None):
+        await self._handle_buy(ctx, args)
+
+    @shop_group.command(name="buy")
+    @commands.guild_only()
+    async def shop_buy(self, ctx: commands.Context, *, args: str | None = None):
+        await self._handle_buy(ctx, args)
+
+    async def _handle_buy(self, ctx, args):
+        if not args or not args.strip():
+            await ctx.reply(embed=embeds.error_embed(f"What do you want to buy? Try `{ctx.prefix}shop` to see items."))
+            return
+        # Allow "Basic Shield" or "shield" optionally followed by a quantity:
+        # "shield 3", "basic shield 2". Pull a trailing integer as qty if present.
+        parts = args.strip().split()
+        n = 1
+        if len(parts) > 1 and parts[-1].isdigit():
+            n = max(1, int(parts[-1]))
+            name = " ".join(parts[:-1])
+        else:
+            name = args.strip()
+
+        ok, reason, item = await do_buy(self.shop, self.sob_repo, ctx.guild.id, ctx.author.id, name, n)
+        if not ok:
+            msgs = {
+                "no_item": f"No item called `{name}`. Try `{ctx.prefix}shop` to see what's available.",
+                "disabled": "That item is disabled right now.",
+                "out_of_stock": "That item is out of stock.",
+                "not_enough_sobs": "You don't have enough sobs for that.",
+            }
+            await ctx.reply(embed=embeds.error_embed(msgs.get(reason, "Couldn't buy that.")))
+            return
+        stats = await self.sob_repo.get_user_stats(ctx.guild.id, ctx.author.id)
+        await ctx.reply(embed=embeds.buy_success_embed(ctx.author, item, n, stats["sobs_alltime"]))
+
+    # ---- my stuff: inventory + effects merged ----
+
+    @commands.command(name="me", aliases=["inventory", "inv", "effects", "mystuff"])
+    @commands.guild_only()
+    async def me_cmd(self, ctx: commands.Context, member: discord.Member | None = None):
+        member = member or ctx.author
+        inv = await self.shop.get_inventory(ctx.guild.id, member.id)
+        effs = await self.shop.get_effects(ctx.guild.id, member.id)
+        catalog = await self.shop.get_catalog(ctx.guild.id)
+        view = MyStuffView(self, member, inv) if (member.id == ctx.author.id and inv) else None
+        await ctx.reply(embed=embeds.my_stuff_embed(member, inv, effs, catalog), view=view)
+
+    # ---- use (text) ----
+
+    @commands.command(name="use")
+    @commands.guild_only()
+    async def use_cmd(self, ctx: commands.Context, *, args: str | None = None):
+        if not args or not args.strip():
+            await ctx.reply(embed=embeds.error_embed(f"What do you want to use? Check `{ctx.prefix}me`."))
+            return
+
+        # A trailing mention is the target; the rest is the item name.
+        target = ctx.message.mentions[0] if ctx.message.mentions else None
+        name = args
+        if target is not None:
+            # strip the mention token(s) out of the name text
+            for token in (f"<@{target.id}>", f"<@!{target.id}>"):
+                name = name.replace(token, "")
+        name = name.strip()
+        if not name:
+            await ctx.reply(embed=embeds.error_embed(f"Which item? e.g. `{ctx.prefix}use shield`."))
+            return
+
+        # resolve to a canonical key via the catalog (accepts name or key)
+        item = await self.shop.get_item(ctx.guild.id, name)
+        key = item["key"] if item else name
+        ok, emb = await do_use(self.shop, ctx.guild.id, ctx.author, key, target)
+        await ctx.reply(embed=emb)
+
+    # ---- help ----
+
+    @shop_group.command(name="help")
+    @commands.guild_only()
+    async def shop_help(self, ctx: commands.Context):
+        p = ctx.prefix
+        e = discord.Embed(title="🛒 Sob Shop — Help", color=embeds.ACCENT)
+        e.add_field(name="The easy way", value=(
+            f"`{p}shop` — open the shop and **tap buttons** to buy & use"
+        ), inline=False)
+        e.add_field(name="Text commands", value=(
+            f"`{p}buy <item>` — buy something\n"
+            f"`{p}me` — your items + active effects (with Use buttons)\n"
+            f"`{p}use <item> [@user]` — use an item"
+        ), inline=False)
+        e.add_field(name="Server owners", value=(
+            f"`{p}shop additem <key> <price> <name...>`\n"
+            f"`{p}shop setstock <key> <n>` · `{p}shop removeitem <key>`"
+        ), inline=False)
+        await ctx.reply(embed=e)
+
+    # ---- owner item management ----
+
+    @shop_group.command(name="boostmult", aliases=["boostmultiplier"])
+    @commands.guild_only()
+    async def shop_boostmult(self, ctx: commands.Context, value: float | None = None):
+        if value is None:
+            current = await self.shop.get_boost_multiplier(ctx.guild.id)
+            await ctx.reply(embed=embeds.used_embed("Boost multiplier", f"Currently **{current}×**.\nSet with `{ctx.prefix}shop boostmult <number>`."))
+            return
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can change the boost multiplier."))
+            return
+        if value < 1:
+            await ctx.reply(embed=embeds.error_embed("Multiplier must be at least 1."))
+            return
+        new = await self.shop.set_boost_multiplier(ctx.guild.id, value)
+        await ctx.reply(embed=embeds.used_embed("Boost multiplier updated", f"Boosted snitches now drain **{new}×** the message's sobs."))
+
+    @shop_group.command(name="additem")
+    @commands.guild_only()
+    async def shop_additem(self, ctx: commands.Context, key: str, price: int, *, name: str):
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can add items."))
+            return
+        if key.lower() in BUILTIN_ITEMS:
+            await ctx.reply(embed=embeds.error_embed("That key is reserved by a built-in item."))
+            return
+        await self.shop.upsert_custom_item(
+            ctx.guild.id, item_key=key.lower(), name=name, category="server",
+            price=max(0, price), icon="🎁", stock=-1, enabled=True,
+            description="Custom server reward — claim with !use, an admin delivers it.",
+        )
+        await ctx.reply(embed=embeds.used_embed(
+            "Server item added",
+            f"🎁 **{name}** — `{price}` sobs (key `{key.lower()}`)\nUnlimited stock. Limit it with `{ctx.prefix}shop setstock {key.lower()} <n>`.",
+        ))
+
+    @shop_group.command(name="setstock")
+    @commands.guild_only()
+    async def shop_setstock(self, ctx: commands.Context, key: str, stock: int):
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can change stock."))
+            return
+        catalog = await self.shop.get_catalog(ctx.guild.id)
+        it = next((c for c in catalog if c["key"] == key.lower()), None)
+        if it is None:
+            await ctx.reply(embed=embeds.error_embed(f"No item `{key}`."))
+            return
+        await self.shop.upsert_custom_item(
+            ctx.guild.id, item_key=key.lower(), name=it["name"], category=it["category"],
+            price=it["price"], icon=it["icon"], stock=stock, enabled=it["enabled"],
+            description=it.get("description", ""),
+        )
+        txt = "unlimited" if stock < 0 else str(stock)
+        await ctx.reply(embed=embeds.used_embed("Stock updated", f"**{it['name']}** stock set to `{txt}`."))
+
+    @shop_group.command(name="removeitem")
+    @commands.guild_only()
+    async def shop_removeitem(self, ctx: commands.Context, key: str):
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can remove items."))
+            return
+        catalog = await self.shop.get_catalog(ctx.guild.id)
+        it = next((c for c in catalog if c["key"] == key.lower()), None)
+        if it is None:
+            await ctx.reply(embed=embeds.error_embed(f"No item `{key}`."))
+            return
+        await self.shop.upsert_custom_item(
+            ctx.guild.id, item_key=key.lower(), name=it["name"], category=it["category"],
+            price=it["price"], icon=it["icon"], stock=it.get("stock", -1), enabled=False,
+            description=it.get("description", ""),
+        )
+        await ctx.reply(embed=embeds.used_embed("Item disabled", f"**{it['name']}** is no longer buyable."))

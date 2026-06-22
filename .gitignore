@@ -1,3 +1,26 @@
-
-# secrets
+# Secrets — NEVER commit
 .env
+.env.*
+*.env
+
+# Databases & backups
+database/
+database_dev/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.backup-*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
