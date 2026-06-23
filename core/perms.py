@@ -18,6 +18,7 @@ PERMISSIONS: dict[str, str] = {
     "givetoken": "Grant snitch tokens to users",
     "manageshop": "Add/remove shop items, stock, prices, claim channel/role",
     "manageconfig": "Change threshold, emojis, boost multiplier; recount/reset",
+    "announce": "Post announcements with !announce",
 }
 
 
