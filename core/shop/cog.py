@@ -40,16 +40,14 @@ async def do_use(shop, guild_id, user, item_key, target=None):
     builtin = BUILTIN_ITEMS.get(key)
     db = await shop._db()
 
-    # custom server item -> claim
+    # custom server item -> claim (cog handles the notification with context)
     if builtin is None:
         await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
         await db.commit()
         catalog = await shop.get_catalog(guild_id)
-        it = next((c for c in catalog if c["key"] == key), {"name": key, "icon": "🎁"})
-        return True, embeds.used_embed(
-            "Claim submitted",
-            f"{user.mention} is claiming **{it['icon']} {it['name']}**.\nAn admin will follow up to deliver it.",
-        )
+        it = next((c for c in catalog if c["key"] == key), {"name": key, "icon": "🎁", "key": key})
+        # special return: ("claim", item) tells the caller to post a claim notice
+        return "claim", it
 
     effect_key = builtin["effect_key"]
     duration = builtin.get("duration", 0)
@@ -238,7 +236,14 @@ class UseButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
-        ok, emb = await do_use(self.cog.shop, interaction.guild.id, interaction.user, self.item_key)
+        # custom server items need channel/DM notification logic -> route to text command
+        if builtin is None:
+            await interaction.response.send_message(
+                embed=embeds.error_embed(f"To claim this item, use `!use {self.item_key}` in a channel."),
+                ephemeral=True,
+            )
+            return
+        result, emb = await do_use(self.cog.shop, interaction.guild.id, interaction.user, self.item_key)
         await interaction.response.send_message(embed=emb, ephemeral=True)
 
 
@@ -338,8 +343,66 @@ class ShopCog(commands.Cog):
         # resolve to a canonical key via the catalog (accepts name or key)
         item = await self.shop.get_item(ctx.guild.id, name)
         key = item["key"] if item else name
-        ok, emb = await do_use(self.shop, ctx.guild.id, ctx.author, key, target)
+        result, emb = await do_use(self.shop, ctx.guild.id, ctx.author, key, target)
+
+        # custom server item claim -> notify channel/role or DM the buyer
+        if result == "claim":
+            await self._handle_claim(ctx, emb)  # emb is actually the item dict here
+            return
+
         await ctx.reply(embed=emb)
+
+    async def _handle_claim(self, ctx, item: dict):
+        import datetime
+        when = datetime.datetime.now(datetime.timezone.utc).strftime("%b %d, %Y · %H:%M UTC")
+        icon = item.get("icon", "🎁")
+        iname = item.get("name", item.get("key", "item"))
+
+        chan_id = await self.shop.sob_repo.get_guild_setting(ctx.guild.id, "fulfillment_channel_id")
+        role_id = await self.shop.sob_repo.get_guild_setting(ctx.guild.id, "fulfillment_role_id")
+
+        # build the small horizontal claim embed
+        claim = discord.Embed(color=embeds.ACCENT)
+        claim.description = f"{icon} **{iname}** · {ctx.author.mention} · `{when}`"
+        claim.set_author(name="Item claim")
+
+        channel = None
+        if chan_id:
+            try:
+                channel = ctx.guild.get_channel(int(chan_id))
+            except (ValueError, TypeError):
+                channel = None
+
+        if channel is not None:
+            ping = ""
+            if role_id:
+                ping = f"<@&{role_id}> "
+            try:
+                await channel.send(
+                    content=f"{ping}new claim",
+                    embed=claim,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+                await ctx.reply(embed=embeds.used_embed("Claim submitted", f"Your claim for **{iname}** was sent to the team. They'll deliver it soon."))
+                return
+            except discord.Forbidden:
+                pass  # fall through to DM if we can't post there
+
+        # no channel (or failed) -> DM the buyer
+        try:
+            await ctx.author.send(
+                embed=embeds.used_embed(
+                    "Claim submitted",
+                    f"You claimed **{icon} {iname}** in **{ctx.guild.name}**.\nPlease contact a server admin to receive it.",
+                )
+            )
+            await ctx.reply(embed=embeds.used_embed("Claim submitted", "Check your DMs — contact an admin to receive your item."))
+        except discord.Forbidden:
+            # DMs closed -> just reply in channel
+            await ctx.reply(embed=embeds.used_embed(
+                "Claim submitted",
+                f"{ctx.author.mention} claimed **{icon} {iname}** — please contact an admin to receive it.",
+            ))
 
     # ---- help ----
 
@@ -357,8 +420,11 @@ class ShopCog(commands.Cog):
             f"`{p}use <item> [@user]` — use an item"
         ), inline=False)
         e.add_field(name="Server owners", value=(
-            f"`{p}shop additem <key> <price> <name...>`\n"
-            f"`{p}shop setstock <key> <n>` · `{p}shop removeitem <key>`"
+            f"`{p}shop additem <key> <price> <name>` — add a Server Item\n"
+            f"`{p}shop setstock <key> <n>` · `{p}shop removeitem <key>`\n"
+            f"`{p}shop setchannel #channel` — where claims are posted\n"
+            f"`{p}shop setrole @role` — who gets pinged on a claim\n"
+            f"`{p}shop boostmult <n>` — set boost multiplier"
         ), inline=False)
         await ctx.reply(embed=e)
 
@@ -379,6 +445,33 @@ class ShopCog(commands.Cog):
             return
         new = await self.shop.set_boost_multiplier(ctx.guild.id, value)
         await ctx.reply(embed=embeds.used_embed("Boost multiplier updated", f"Boosted snitches now drain **{new}×** the message's sobs."))
+
+    @shop_group.command(name="setchannel")
+    @commands.guild_only()
+    async def shop_setchannel(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can set the claim channel."))
+            return
+        if channel is None:
+            # clear it
+            await self.shop.sob_repo.set_guild_setting(ctx.guild.id, "fulfillment_channel_id", "")
+            await ctx.reply(embed=embeds.used_embed("Claim channel cleared", "Server-item claims will now DM the buyer instead."))
+            return
+        await self.shop.sob_repo.set_guild_setting(ctx.guild.id, "fulfillment_channel_id", str(channel.id))
+        await ctx.reply(embed=embeds.used_embed("Claim channel set", f"Server-item claims will post in {channel.mention}."))
+
+    @shop_group.command(name="setrole")
+    @commands.guild_only()
+    async def shop_setrole(self, ctx: commands.Context, role: discord.Role | None = None):
+        if not _is_admin(ctx, self.settings):
+            await ctx.reply(embed=embeds.error_embed("Only server admins can set the claim role."))
+            return
+        if role is None:
+            await self.shop.sob_repo.set_guild_setting(ctx.guild.id, "fulfillment_role_id", "")
+            await ctx.reply(embed=embeds.used_embed("Claim role cleared", "Claims will no longer ping a role."))
+            return
+        await self.shop.sob_repo.set_guild_setting(ctx.guild.id, "fulfillment_role_id", str(role.id))
+        await ctx.reply(embed=embeds.used_embed("Claim role set", f"Claims will ping {role.mention}."))
 
     @shop_group.command(name="additem")
     @commands.guild_only()

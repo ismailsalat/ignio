@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 
 from core.sob import embeds
-from core.sob.repo import SobRepo, SOB_EMOJIS
+from core.sob.repo import SobRepo
 
 
 class SobCog(commands.Cog):
@@ -146,7 +146,7 @@ class SobCog(commands.Cog):
         # Shop effects: freeze stops the snitcher; shield protects the target.
         if self.shop_repo is not None:
             if await self.shop_repo.has_effect(guild.id, user.id, "freeze"):
-                await ctx.reply(f"❄️ You're **frozen** — you can't snitch right now.", mention_author=False)
+                await ctx.reply("❄️ You're **frozen** — you can't snitch right now.", mention_author=False)
                 return
 
             if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "shield"):
