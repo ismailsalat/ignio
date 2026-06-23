@@ -36,15 +36,22 @@ class AdminCog(commands.Cog):
         self.db_manager = db_manager
         self.repo = sob_repo
 
-    async def cog_check(self, ctx: commands.Context) -> bool:
+    async def _require(self, ctx, perm: str) -> bool:
+        """Permission gate: admins/owner always pass; others need the role perm.
+        Replies with an error and returns False if not allowed."""
+        from core import perms as _perms
+        if await _perms.member_has_perm(self.repo, ctx.author, self.settings, perm):
+            return True
+        await ctx.reply(embed=_err(f"You need the `{perm}` permission to use this."))
+        return False
+
+    async def _require_owner(self, ctx) -> bool:
+        """Strict gate for sensitive data ops (export/import/stats/servers)."""
         owner_ids = set(getattr(self.settings, "owner_ids", ()) or ())
-        if ctx.author.id in owner_ids:
+        if ctx.author.id in owner_ids or await self.bot.is_owner(ctx.author):
             return True
-        if await self.bot.is_owner(ctx.author):
-            return True
-        raise commands.CheckFailure(
-            "Admin commands are owner-only. Add your user ID to OWNER_IDS."
-        )
+        await ctx.reply(embed=_err("This command is owner-only."))
+        return False
 
     def _prefix(self) -> str:
         p = self.bot.command_prefix
@@ -113,6 +120,8 @@ class AdminCog(commands.Cog):
 
     @admin_group.command(name="stats")
     async def admin_stats(self, ctx: commands.Context):
+        if not await self._require_owner(ctx):
+            return
         db = await self.db_manager.get()
         async def c(sql):
             row = await db.fetchone(sql)
@@ -164,6 +173,8 @@ class AdminCog(commands.Cog):
 
     @admin_group.command(name="servers")
     async def admin_servers(self, ctx: commands.Context):
+        if not await self._require_owner(ctx):
+            return
         db = await self.db_manager.get()
         rows = await transfer.list_guilds(db)
         if not rows:
@@ -188,6 +199,7 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "givesob"): return
         if amount == 0:
             await ctx.reply(embed=_err("Amount can't be zero."))
             return
@@ -203,6 +215,7 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "givetoken"): return
         await self.repo.grant_tokens(ctx.guild.id, member.id, max(1, count))
         e = _ok("Snitch token granted")
         e.add_field(name="User", value=member.mention, inline=True)
@@ -215,6 +228,7 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "manageconfig"): return
         await self.repo.reset_user(ctx.guild.id, member.id)
         e = _ok("User reset", f"All sob data wiped for {member.mention} in this server.")
         await ctx.reply(embed=e)
@@ -224,6 +238,7 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "manageconfig"): return
         summary = await self.repo.recount(ctx.guild.id)
         e = _ok("Recount complete", "Rebuilt all-time received totals from raw reactions.")
         e.add_field(name="Users recounted", value=f"`{summary['users_recounted']}`", inline=True)
@@ -247,6 +262,8 @@ class AdminCog(commands.Cog):
             return
         if value < 1:
             await ctx.reply(embed=_err("Threshold must be at least 1."))
+            return
+        if not await self._require(ctx, "manageconfig"):
             return
         new = await self.repo.set_snitch_threshold(ctx.guild.id, value)
         await ctx.reply(embed=_ok("Threshold updated", f"Now `{new}` sobs per snitch token."))
@@ -272,6 +289,8 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "manageconfig"):
+            return
         # accept either a raw emoji or a name; store the name if it's custom
         clean = name.strip()
         if clean.startswith("<") and clean.endswith(">"):
@@ -288,6 +307,8 @@ class AdminCog(commands.Cog):
         if ctx.guild is None:
             await ctx.reply(embed=_err("Run this in a server."))
             return
+        if not await self._require(ctx, "manageconfig"):
+            return
         clean = name.strip()
         if clean.startswith("<") and clean.endswith(">"):
             parts = clean.strip("<>").split(":")
@@ -303,6 +324,8 @@ class AdminCog(commands.Cog):
 
     @admin_group.command(name="export")
     async def admin_export(self, ctx: commands.Context, guild_id: int | None = None):
+        if not await self._require_owner(ctx):
+            return
         gid = guild_id or (ctx.guild.id if ctx.guild else None)
         if gid is None:
             await ctx.reply(embed=_err("Provide a guild_id (or run this in a server)."))
@@ -321,6 +344,8 @@ class AdminCog(commands.Cog):
 
     @admin_group.command(name="import")
     async def admin_import(self, ctx: commands.Context, mode: str = "merge", target_guild_id: int | None = None):
+        if not await self._require_owner(ctx):
+            return
         if mode not in ("merge", "replace"):
             await ctx.reply(embed=_err("Mode must be `merge` or `replace`."))
             return

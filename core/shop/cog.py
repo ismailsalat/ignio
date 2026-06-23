@@ -198,12 +198,13 @@ class MyStuffButton(discord.ui.Button):
         inv = await cog.shop.get_inventory(gid, interaction.user.id)
         effs = await cog.shop.get_effects(gid, interaction.user.id)
         catalog = await cog.shop.get_catalog(gid)
-        view = MyStuffView(cog, interaction.user, inv)
-        await interaction.response.send_message(
+        kwargs = dict(
             embed=embeds.my_stuff_embed(interaction.user, inv, effs, catalog),
-            view=view if inv else None,
             ephemeral=True,
         )
+        if inv:  # only attach a view when there are items to show Use buttons for
+            kwargs["view"] = MyStuffView(cog, interaction.user, inv)
+        await interaction.response.send_message(**kwargs)
 
 
 class MyStuffView(discord.ui.View):
@@ -257,6 +258,10 @@ class ShopCog(commands.Cog):
         self.settings = settings
         self.shop = shop_repo
         self.sob_repo = sob_repo
+
+    async def _can_manage(self, ctx) -> bool:
+        from core import perms as _perms
+        return await _perms.member_has_perm(self.sob_repo, ctx.author, self.settings, "manageshop")
 
     # ---- shop browse (with buttons) ----
 
@@ -316,8 +321,10 @@ class ShopCog(commands.Cog):
         inv = await self.shop.get_inventory(ctx.guild.id, member.id)
         effs = await self.shop.get_effects(ctx.guild.id, member.id)
         catalog = await self.shop.get_catalog(ctx.guild.id)
-        view = MyStuffView(self, member, inv) if (member.id == ctx.author.id and inv) else None
-        await ctx.reply(embed=embeds.my_stuff_embed(member, inv, effs, catalog), view=view)
+        kwargs = {"embed": embeds.my_stuff_embed(member, inv, effs, catalog)}
+        if member.id == ctx.author.id and inv:
+            kwargs["view"] = MyStuffView(self, member, inv)
+        await ctx.reply(**kwargs)
 
     # ---- use (text) ----
 
@@ -437,7 +444,7 @@ class ShopCog(commands.Cog):
             current = await self.shop.get_boost_multiplier(ctx.guild.id)
             await ctx.reply(embed=embeds.used_embed("Boost multiplier", f"Currently **{current}×**.\nSet with `{ctx.prefix}shop boostmult <number>`."))
             return
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can change the boost multiplier."))
             return
         if value < 1:
@@ -449,7 +456,7 @@ class ShopCog(commands.Cog):
     @shop_group.command(name="setchannel")
     @commands.guild_only()
     async def shop_setchannel(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can set the claim channel."))
             return
         if channel is None:
@@ -463,7 +470,7 @@ class ShopCog(commands.Cog):
     @shop_group.command(name="setrole")
     @commands.guild_only()
     async def shop_setrole(self, ctx: commands.Context, role: discord.Role | None = None):
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can set the claim role."))
             return
         if role is None:
@@ -476,7 +483,7 @@ class ShopCog(commands.Cog):
     @shop_group.command(name="additem")
     @commands.guild_only()
     async def shop_additem(self, ctx: commands.Context, key: str, price: int, *, name: str):
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can add items."))
             return
         if key.lower() in BUILTIN_ITEMS:
@@ -495,7 +502,7 @@ class ShopCog(commands.Cog):
     @shop_group.command(name="setstock")
     @commands.guild_only()
     async def shop_setstock(self, ctx: commands.Context, key: str, stock: int):
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can change stock."))
             return
         catalog = await self.shop.get_catalog(ctx.guild.id)
@@ -514,7 +521,7 @@ class ShopCog(commands.Cog):
     @shop_group.command(name="removeitem")
     @commands.guild_only()
     async def shop_removeitem(self, ctx: commands.Context, key: str):
-        if not _is_admin(ctx, self.settings):
+        if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can remove items."))
             return
         catalog = await self.shop.get_catalog(ctx.guild.id)

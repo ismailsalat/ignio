@@ -70,6 +70,7 @@ class HelpCog(commands.Cog):
                 value=(
                     f"`{p}admin` — admin menu\n"
                     f"`{p}admin config` — server settings\n"
+                    f"`{p}perms` — role permissions (let other roles give sobs/tokens)\n"
                     f"`{p}shop additem` · `{p}shop boostmult` — shop config"
                 ),
                 inline=False,

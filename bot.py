@@ -16,6 +16,7 @@ from core.admin.cog import AdminCog
 from core.shop.repo import ShopRepo
 from core.shop.cog import ShopCog
 from core.help.cog import HelpCog
+from core.perms_cog import PermsCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -74,6 +75,7 @@ async def run() -> None:
             ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo)),
             ("ShopCog", ShopCog(bot, settings, shop_repo, sob_repo)),
             ("HelpCog", HelpCog(bot, settings)),
+            ("PermsCog", PermsCog(bot, settings, sob_repo)),
         ):
             try:
                 await bot.add_cog(cog)
