@@ -100,11 +100,19 @@ class ProfileService:
         """Build the top-10 leaderboard card. Returns None on failure (embed fallback)."""
         try:
             from core.profile.lb_render import make_leaderboard_card
+            from core.profile.render import clean_name, renderable
             gid = guild.id
 
             def _name(uid):
                 m = guild.get_member(uid)
-                return m.display_name if m else f"user {uid}"
+                if not m:
+                    return f"user {uid}"
+                disp = clean_name(m.display_name)
+                if renderable(disp):
+                    return disp
+                # display name was mostly emoji/non-Latin -> use the @username
+                uname = clean_name(m.name)
+                return uname if renderable(uname) else (disp or m.name)
 
             top_rows = await sob_repo.get_top_alltime(gid, 10)
             top = [{"name": _name(r["user_id"]), "sobs": r["count"]} for r in top_rows]
@@ -147,8 +155,14 @@ class ProfileService:
 
             badges = ["dev"] if self._is_owner(uid) else []
 
+            from core.profile.render import clean_name, renderable
+            disp = clean_name(member.display_name)
+            if not renderable(disp):
+                alt = clean_name(member.name)
+                disp = alt if renderable(alt) else (disp or member.name)
+
             card_stats = {
-                "name": member.display_name,
+                "name": disp,
                 "handle": member.name,
                 "rank": rank_alltime if stats["sobs_alltime"] > 0 else "—",
                 "sobs_today": stats["sobs_today"],

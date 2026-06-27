@@ -8,12 +8,21 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 RELEASED = "2026-06-27"        # date of this version (YYYY-MM-DD)
 CODENAME = "Leaderboard Cards"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "0.7.2",
+        "date": "2026-06-27",
+        "title": "Cleaner Names",
+        "notes": [
+            "Profile & leaderboard cards no longer show boxes for emoji names",
+            "Names with emojis are cleaned; non-Latin names use the @username",
+        ],
+    },
     {
         "version": "0.7.1",
         "date": "2026-06-27",

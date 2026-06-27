@@ -12,6 +12,37 @@ from __future__ import annotations
 import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+import unicodedata
+
+
+def clean_name(s: str) -> str:
+    """Strip emoji and symbols the bundled (Latin) fonts can't render, so names
+    don't show as boxes. Keeps letters, digits, punctuation, spaces."""
+    if not s:
+        return ""
+    out = []
+    for ch in s:
+        cp = ord(ch)
+        cat = unicodedata.category(ch)
+        # drop emoji / symbols / private-use / format chars
+        if cat in ("So", "Sk", "Cs", "Cf", "Co"):
+            continue
+        if (0x1F000 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF) or cp in (0x200D, 0xFE0F):
+            continue
+        out.append(ch)
+    return "".join(out).strip()
+
+
+def renderable(s: str, threshold: float = 0.5) -> bool:
+    """True if enough of the string is basic Latin/ASCII to render readably.
+    Used to decide whether to fall back to a username."""
+    if not s:
+        return False
+    latin = sum(1 for c in s if ord(c) < 0x250 and c.strip())
+    total = sum(1 for c in s if c.strip())
+    return total > 0 and (latin / total) >= threshold
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONTS = os.path.join(HERE, "fonts")
 WALLPAPERS = os.path.join(HERE, "wallpapers")
