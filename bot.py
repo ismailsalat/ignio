@@ -102,17 +102,30 @@ async def run() -> None:
 
     @bot.check
     async def _gating_check(ctx):
-        # No gating in DMs or for the admin category. Admins/owner always bypass.
+        # No gating in DMs or when there's no command.
         if ctx.guild is None or ctx.command is None:
-            return True
-        from core.gating import _is_admin
-        if _is_admin(ctx.author, settings):
             return True
         root = ctx.command.root_parent or ctx.command
         try:
             blocked = await gate.is_blocked(ctx.guild.id, ctx.channel.id, root.name)
         except Exception:
             return True  # never let the gate check crash a command
+
+        from core.gating import _is_admin
+        if _is_admin(ctx.author, settings):
+            # Admins always bypass — but if this command is disabled for normal
+            # users here, leave a quiet note so the admin knows the rule is live.
+            if blocked:
+                try:
+                    await ctx.send(
+                        f"🛠️ *Heads up: this command is disabled here for non-admins — "
+                        f"you're seeing it because you're an admin. `{ctx.prefix}commandconfig` to review.*",
+                        delete_after=8,
+                    )
+                except Exception:
+                    pass
+            return True
+
         if blocked:
             raise commands.CheckFailure("That command is disabled here.")
         return True

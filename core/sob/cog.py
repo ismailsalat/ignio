@@ -179,6 +179,14 @@ class SobCog(commands.Cog):
     @commands.guild_only()
     async def sob_lb(self, ctx: commands.Context):
         guild = ctx.guild
+
+        # Try the leaderboard card first (with kill-switch), fall back to embed.
+        if self.profile is not None and await self.profile.profile_enabled(guild.id):
+            card = await self.profile.build_leaderboard_card(guild, self.sob_repo)
+            if card is not None:
+                await ctx.reply(file=card)
+                return
+
         await ctx.reply(embed=embeds.leaderboard_embed(
             guild=guild,
             daily_leader=await self.sob_repo.get_daily_leader(guild.id),

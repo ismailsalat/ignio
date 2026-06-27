@@ -96,6 +96,41 @@ class ProfileService:
         except Exception:
             return None
 
+    async def build_leaderboard_card(self, guild, sob_repo) -> discord.File | None:
+        """Build the top-10 leaderboard card. Returns None on failure (embed fallback)."""
+        try:
+            from core.profile.lb_render import make_leaderboard_card
+            gid = guild.id
+
+            def _name(uid):
+                m = guild.get_member(uid)
+                return m.display_name if m else f"user {uid}"
+
+            top_rows = await sob_repo.get_top_alltime(gid, 10)
+            top = [{"name": _name(r["user_id"]), "sobs": r["count"]} for r in top_rows]
+
+            async def _leader(coro):
+                r = await coro
+                return {"name": _name(r["user_id"]), "count": r["count"]} if r else None
+
+            data = {
+                "guild_name": guild.name,
+                "top": top,
+                "daily": await _leader(sob_repo.get_daily_leader(gid)),
+                "weekly": await _leader(sob_repo.get_weekly_leader(gid)),
+                "giver": await _leader(sob_repo.get_top_giver(gid)),
+                "snitch": await _leader(sob_repo.get_top_snitch(gid)),
+            }
+            # Fixed clean background for the leaderboard (not user-specific).
+            img = make_leaderboard_card(data, wallpaper="midnight", theme="amber")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            return discord.File(buf, filename="sob_leaderboard.png")
+        except Exception as e:
+            print(f"[Ignio][Profile] leaderboard card failed, falling back to embed: {e}")
+            return None
+
     async def build_profile_card(self, guild, member) -> discord.File | None:
         """Return a discord.File of the card, or None if anything fails
         (caller then falls back to the embed)."""

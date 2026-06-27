@@ -507,6 +507,17 @@ class SobRepo:
     async def get_alltime_leader(self, guild_id: int) -> dict[str, Any] | None:
         return await self._top_user(guild_id, "sobs_received_alltime")
 
+    async def get_top_alltime(self, guild_id: int, n: int = 10) -> list[dict[str, Any]]:
+        """Top N users by all-time sobs received (for the leaderboard card)."""
+        db = await self._db()
+        rows = await db.fetchall(
+            "SELECT user_id, sobs_received_alltime AS c FROM sob_users "
+            "WHERE guild_id = ? AND sobs_received_alltime > 0 "
+            "ORDER BY sobs_received_alltime DESC, user_id ASC LIMIT ?",
+            (guild_id, n),
+        )
+        return [{"user_id": int(r["user_id"]), "count": int(r["c"])} for r in rows]
+
     async def get_top_giver(self, guild_id: int) -> dict[str, Any] | None:
         return await self._top_user(guild_id, "sobs_given_alltime")
 
