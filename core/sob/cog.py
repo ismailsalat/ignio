@@ -11,11 +11,12 @@ from core.sob.repo import SobRepo
 
 
 class SobCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, settings, sob_repo: SobRepo, shop_repo=None):
+    def __init__(self, bot: commands.Bot, settings, sob_repo: SobRepo, shop_repo=None, profile_service=None):
         self.bot = bot
         self.settings = settings
         self.sob_repo = sob_repo
         self.shop_repo = shop_repo
+        self.profile = profile_service
 
     # ----- helpers -------------------------------------------------------
 
@@ -83,8 +84,25 @@ class SobCog(commands.Cog):
 
     @commands.group(name="sob", invoke_without_command=True)
     @commands.guild_only()
-    async def sob_group(self, ctx: commands.Context):
-        guild, user, now = ctx.guild, ctx.author, int(time.time())
+    async def sob_group(self, ctx: commands.Context, *, target: str | None = None):
+        guild, now = ctx.guild, int(time.time())
+
+        # Resolve an optional @user / name without swallowing subcommands.
+        user = ctx.author
+        if target:
+            target = target.strip()
+            member = None
+            if ctx.message.mentions:
+                member = ctx.message.mentions[0]
+            else:
+                member = guild.get_member_named(target)
+                if member is None:
+                    try:
+                        member = await commands.MemberConverter().convert(ctx, target)
+                    except commands.BadArgument:
+                        member = None
+            if member is not None:
+                user = member
 
         threshold = await self.sob_repo.get_snitch_threshold(guild.id)
         stats = await self.sob_repo.get_user_stats(guild.id, user.id)
@@ -93,11 +111,69 @@ class SobCog(commands.Cog):
         rank_alltime = await self.sob_repo.get_user_alltime_rank(guild.id, user.id)
         snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
 
+        # Try the new profile card first (with owner kill-switch). If it's
+        # disabled or fails for any reason, fall back to the classic embed.
+        if self.profile is not None and await self.profile.profile_enabled(guild.id):
+            card = await self.profile.build_profile_card(guild, user)
+            if card is not None:
+                await ctx.reply(file=card)
+                return
+
         await ctx.reply(embed=embeds.personal_embed(
             user=user, stats=stats,
             rank_today=rank_today, rank_week=rank_week, rank_alltime=rank_alltime,
             snitch_row=snitch_row, snitch_threshold=threshold, now_ts=now,
         ))
+
+    @sob_group.command(name="set")
+    @commands.guild_only()
+    async def sob_set(self, ctx: commands.Context, what: str | None = None, *, value: str | None = None):
+        """Change your profile: !sob set background <name> | !sob set color <name>"""
+        from core.profile.cog import FREE_BACKGROUNDS, FREE_COLORS
+        from core.sob import embeds as e
+        if self.profile is None:
+            await ctx.reply("Profiles aren't available right now.")
+            return
+
+        gid, uid = ctx.guild.id, ctx.author.id
+        what = (what or "").lower().strip()
+
+        if what in ("bg", "background", "wallpaper"):
+            if not value:
+                cur = await self.profile.get_user_background(gid, uid)
+                await ctx.reply(embed=e.profile_options_embed(
+                    "🖼️ Backgrounds", sorted(FREE_BACKGROUNDS), cur,
+                    f"{ctx.prefix}sob set background <name>"))
+                return
+            ok, res = await self.profile.set_user_background(gid, uid, value)
+            if ok:
+                await ctx.reply(f"✅ Background set to **{res}**. Run `{ctx.prefix}sob` to see it.")
+            else:
+                await ctx.reply(f"⚠️ You can't use `{value}`. Free options: {', '.join(sorted(FREE_BACKGROUNDS))}.")
+
+        elif what in ("color", "colour", "theme"):
+            if not value:
+                cur = await self.profile.get_user_color(gid, uid)
+                await ctx.reply(embed=e.profile_options_embed(
+                    "🎨 Colors", sorted(FREE_COLORS), cur,
+                    f"{ctx.prefix}sob set color <name>"))
+                return
+            ok, res = await self.profile.set_user_color(gid, uid, value)
+            if ok:
+                await ctx.reply(f"✅ Color set to **{res}**. Run `{ctx.prefix}sob` to see it.")
+            else:
+                await ctx.reply(f"⚠️ `{value}` isn't available. Options: {', '.join(sorted(FREE_COLORS))}.")
+
+        else:
+            cur_bg = await self.profile.get_user_background(gid, uid)
+            cur_color = await self.profile.get_user_color(gid, uid)
+            emb = discord.Embed(title="🎴 Customize your profile", color=embeds.COLOR)
+            emb.add_field(name="Background",
+                          value=f"Now: **{cur_bg}**\n`{ctx.prefix}sob set background <name>`", inline=True)
+            emb.add_field(name="Color",
+                          value=f"Now: **{cur_color}**\n`{ctx.prefix}sob set color <name>`", inline=True)
+            emb.set_footer(text="Run a command above to see all the options.")
+            await ctx.reply(embed=emb)
 
     @sob_group.command(name="lb", aliases=["leaderboard"])
     @commands.guild_only()
@@ -112,12 +188,54 @@ class SobCog(commands.Cog):
             top_snitch=await self.sob_repo.get_top_snitch(guild.id),
         ))
 
+    @sob_group.command(name="backgrounds", aliases=["bgs", "wallpapers"])
+    @commands.guild_only()
+    async def sob_backgrounds(self, ctx: commands.Context):
+        from core.profile.cog import FREE_BACKGROUNDS, _all_wallpapers
+        if self.profile is None:
+            await ctx.reply("Profiles aren't available right now.")
+            return
+        cur = await self.profile.get_user_background(ctx.guild.id, ctx.author.id)
+        free = sorted(FREE_BACKGROUNDS)
+        locked = sorted(_all_wallpapers() - FREE_BACKGROUNDS)
+        e = discord.Embed(title="🖼️ Backgrounds", color=embeds.COLOR)
+        e.add_field(
+            name="Free (everyone)",
+            value="\n".join(f"• **{b}**" + (" ✅" if b == cur else "") for b in free) or "—",
+            inline=False,
+        )
+        if locked:
+            e.add_field(
+                name="🔒 Premium (owner only for now)",
+                value="\n".join(f"• {b}" for b in locked),
+                inline=False,
+            )
+        e.set_footer(text=f"Set one with {ctx.prefix}sob set background <name>")
+        await ctx.reply(embed=e)
+
+    @sob_group.command(name="colors", aliases=["colours"])
+    @commands.guild_only()
+    async def sob_colors(self, ctx: commands.Context):
+        from core.profile.cog import FREE_COLORS
+        if self.profile is None:
+            await ctx.reply("Profiles aren't available right now.")
+            return
+        cur = await self.profile.get_user_color(ctx.guild.id, ctx.author.id)
+        e = discord.Embed(title="🎨 Colors", color=embeds.COLOR)
+        e.description = "\n".join(f"• **{c}**" + (" ✅" if c == cur else "") for c in sorted(FREE_COLORS))
+        e.set_footer(text=f"Set one with {ctx.prefix}sob set color <name>")
+        await ctx.reply(embed=e)
+
     @sob_group.command(name="help")
     @commands.guild_only()
     async def sob_help(self, ctx: commands.Context):
-        prefix = getattr(self.bot, "command_prefix", "!")
-        prefix = prefix if isinstance(prefix, str) else "!"
-        await ctx.reply(embed=embeds.snitch_help_embed(prefix))
+        # Mirror the main help's sob page so there's one source of truth.
+        help_cog = self.bot.get_cog("HelpCog")
+        if help_cog is not None and hasattr(help_cog, "_sobs_help"):
+            await ctx.reply(embed=help_cog._sobs_help(ctx.prefix))
+        else:
+            prefix = ctx.prefix
+            await ctx.reply(embed=embeds.snitch_help_embed(prefix))
 
     @commands.command(name="ss", aliases=["sobsnitch"])
     @commands.guild_only()

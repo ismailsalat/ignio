@@ -18,6 +18,10 @@ from core.shop.cog import ShopCog
 from core.help.cog import HelpCog
 from core.perms_cog import PermsCog
 from core.announce_cog import AnnounceCog
+from core.profile.cog import ProfileService
+from core.gating import Gating
+from core.gating_cog import GatingCog
+from core.about_cog import AboutCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -57,6 +61,8 @@ async def run() -> None:
     db_manager = DatabaseManager(path=db_path)
     sob_repo = SobRepo(db_manager)
     shop_repo = ShopRepo(db_manager, sob_repo)
+    profile_service = ProfileService(bot, settings, sob_repo)
+    gate = Gating(sob_repo)
 
     # Safety net: back up the live DB before migrations run on first boot.
     # Enabled by default in prod; toggle with DB_BACKUP_ON_START=0/1.
@@ -72,12 +78,14 @@ async def run() -> None:
         # Force-connect once so migrations run before the bot is ready.
         await db_manager.get()
         for name, cog in (
-            ("SobCog", SobCog(bot, settings, sob_repo, shop_repo)),
-            ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo)),
+            ("SobCog", SobCog(bot, settings, sob_repo, shop_repo, profile_service)),
+            ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo, profile_service)),
             ("ShopCog", ShopCog(bot, settings, shop_repo, sob_repo)),
             ("HelpCog", HelpCog(bot, settings)),
             ("PermsCog", PermsCog(bot, settings, sob_repo)),
             ("AnnounceCog", AnnounceCog(bot, settings, sob_repo)),
+            ("GatingCog", GatingCog(bot, settings, gate)),
+            ("AboutCog", AboutCog(bot, settings)),
         ):
             try:
                 await bot.add_cog(cog)
@@ -91,6 +99,23 @@ async def run() -> None:
     @bot.event
     async def on_ready():
         print(f"[Ignio] ✅ ONLINE as {bot.user} | guilds={len(bot.guilds)} | env={settings.env}")
+
+    @bot.check
+    async def _gating_check(ctx):
+        # No gating in DMs or for the admin category. Admins/owner always bypass.
+        if ctx.guild is None or ctx.command is None:
+            return True
+        from core.gating import _is_admin
+        if _is_admin(ctx.author, settings):
+            return True
+        root = ctx.command.root_parent or ctx.command
+        try:
+            blocked = await gate.is_blocked(ctx.guild.id, ctx.channel.id, root.name)
+        except Exception:
+            return True  # never let the gate check crash a command
+        if blocked:
+            raise commands.CheckFailure("That command is disabled here.")
+        return True
 
     @bot.event
     async def on_message(message: discord.Message):

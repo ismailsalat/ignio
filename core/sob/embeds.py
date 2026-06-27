@@ -137,6 +137,19 @@ def snitch_success_embed(
     return embed
 
 
+
+def profile_options_embed(title, options, current, usage):
+    """Show available profile options, marking the current one."""
+    embed = discord.Embed(title=title, color=COLOR)
+    lines = []
+    for o in options:
+        mark = " ✅ (current)" if o == current else ""
+        lines.append(f"• **{o}**{mark}")
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=usage)
+    return embed
+
+
 def snitch_help_embed(prefix: str = "!") -> discord.Embed:
     embed = discord.Embed(
         title=f"{SOB} Sob & Snitch",

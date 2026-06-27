@@ -30,11 +30,12 @@ def _err(desc: str) -> discord.Embed:
 class AdminCog(commands.Cog):
     """Owner-only maintenance: server config, data ops, export/import."""
 
-    def __init__(self, bot: commands.Bot, settings, db_manager, sob_repo):
+    def __init__(self, bot: commands.Bot, settings, db_manager, sob_repo, profile_service=None):
         self.bot = bot
         self.settings = settings
         self.db_manager = db_manager
         self.repo = sob_repo
+        self.profile = profile_service
 
     async def _require(self, ctx, perm: str) -> bool:
         """Permission gate: admins/owner always pass; others need the role perm.
@@ -113,6 +114,31 @@ class AdminCog(commands.Cog):
         e.add_field(name="App owner", value="Yes" if is_app_owner else "No", inline=True)
         e.add_field(name="In OWNER_IDS", value="Yes" if in_list else "No", inline=True)
         await ctx.reply(embed=e)
+
+    @admin_group.command(name="profile")
+    async def admin_profile(self, ctx: commands.Context, state: str | None = None):
+        """Owner kill-switch for the image profile card.
+        !admin profile off  -> everyone gets the classic embed
+        !admin profile on   -> re-enable the card"""
+        if not await self._require_owner(ctx):
+            return
+        if self.profile is None:
+            await ctx.reply(embed=_err("Profile system isn't loaded."))
+            return
+        if state is None:
+            on = await self.profile.profile_enabled(ctx.guild.id)
+            await ctx.reply(embed=_embed("🖼️ Profile card",
+                f"Currently **{'ON' if on else 'OFF'}**.\nUse `{ctx.prefix}admin profile on|off`."))
+            return
+        state = state.lower().strip()
+        if state in ("on", "enable", "enabled", "1"):
+            await self.profile.set_profile_enabled(ctx.guild.id, True)
+            await ctx.reply(embed=_embed("🖼️ Profile card", "Profile cards are now **ON**."))
+        elif state in ("off", "disable", "disabled", "0"):
+            await self.profile.set_profile_enabled(ctx.guild.id, False)
+            await ctx.reply(embed=_embed("🖼️ Profile card", "Profile cards are **OFF** — `!sob` now shows the classic embed."))
+        else:
+            await ctx.reply(embed=_err("Use `on` or `off`."))
 
     # ======================================================================
     # info
