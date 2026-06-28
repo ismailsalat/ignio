@@ -42,8 +42,13 @@ def shop_embed(guild_name: str, catalog: list[dict], balance: int) -> discord.Em
         for it in items:
             stock = it.get("stock", -1)
             stock_txt = "" if stock is None or stock < 0 else f" · stock {stock}"
+            final = it.get("_final_price")
+            if final and final != it["price"]:
+                price_txt = f"`{it['price']}` +tax = `{final}` sobs"
+            else:
+                price_txt = f"`{it['price']}` sobs"
             lines.append(
-                f"{it['icon']} **{it['name']}** — `{it['price']}` sobs{stock_txt}\n"
+                f"{it['icon']} **{it['name']}** — {price_txt}{stock_txt}\n"
                 f"⤷ {it['description']}"
             )
         e.add_field(name=f"{cat_icon} {cat_label}", value="\n".join(lines), inline=False)
@@ -105,7 +110,13 @@ def category_embed(cat_key: str, items: list[dict]) -> discord.Embed:
     for it in items:
         stock = it.get("stock", -1)
         stock_txt = "" if stock is None or stock < 0 else f" · stock {stock}"
-        lines.append(f"{it['icon']} **{it['name']}** — `{it['price']}` sobs{stock_txt}\n⤷ {it['description']}")
+        # show base + tax-included total when the item is taxed (built-in PvP)
+        final = it.get("_final_price")
+        if final and final != it["price"]:
+            price_txt = f"`{it['price']}` +tax = `{final}` sobs"
+        else:
+            price_txt = f"`{it['price']}` sobs"
+        lines.append(f"{it['icon']} **{it['name']}** — {price_txt}{stock_txt}\n⤷ {it['description']}")
     e.description = "\n\n".join(lines)
     e.set_footer(text="Tap a button below to buy · ◀️ Back for categories")
     return e

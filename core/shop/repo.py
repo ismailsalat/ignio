@@ -42,11 +42,14 @@ class ShopRepo:
 
         # auto-scaled prices for built-in items (median-based, whale-proof)
         auto_prices = {}
+        tax_pct = 0
         if economy is not None:
             try:
                 auto_prices = await economy.all_item_prices(guild_id)
+                tax_pct = await economy.get_tax_pct(guild_id)
             except Exception:
                 auto_prices = {}
+                tax_pct = 0
 
         catalog: list[dict[str, Any]] = []
         # built-ins first (with any overrides applied)
@@ -68,6 +71,8 @@ class ShopRepo:
                     item["icon"] = o["icon"]
                 if o["description"]:
                     item["description"] = o["description"]
+            # tax-included total (built-in PvP items are taxed on top)
+            item["_final_price"] = item["price"] + int(item["price"] * tax_pct / 100)
             catalog.append(item)
 
         # purely custom guild items (keys not in built-ins)

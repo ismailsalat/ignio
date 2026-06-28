@@ -353,6 +353,15 @@ class ShopCog(commands.Cog):
 
         ok, reason, item = await do_buy(self.shop, self.sob_repo, ctx.guild.id, ctx.author.id, name, n)
         if not ok:
+            if reason == "not_enough_sobs" and item is not None:
+                final = item.get("_final_price", item["price"])
+                bal = (await self.sob_repo.get_user_stats(ctx.guild.id, ctx.author.id))["sobs_alltime"]
+                extra = ""
+                if final != item["price"]:
+                    extra = f" ({item['price']} + tax)"
+                await ctx.reply(embed=embeds.error_embed(
+                    f"You need **{final}** sobs{extra} but have **{bal}**."))
+                return
             msgs = {
                 "no_item": f"No item called `{name}`. Try `{ctx.prefix}shop` to see what's available.",
                 "disabled": "That item is disabled right now.",
