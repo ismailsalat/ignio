@@ -22,6 +22,9 @@ from core.profile.cog import ProfileService
 from core.gating import Gating
 from core.gating_cog import GatingCog
 from core.about_cog import AboutCog
+from core.economy import Economy
+from core.economy_cog import EconomyCog
+from core.daily_cog import DailyCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -60,7 +63,8 @@ async def run() -> None:
 
     db_manager = DatabaseManager(path=db_path)
     sob_repo = SobRepo(db_manager)
-    shop_repo = ShopRepo(db_manager, sob_repo)
+    economy = Economy(sob_repo)
+    shop_repo = ShopRepo(db_manager, sob_repo, economy)
     profile_service = ProfileService(bot, settings, sob_repo)
     gate = Gating(sob_repo)
 
@@ -78,14 +82,16 @@ async def run() -> None:
         # Force-connect once so migrations run before the bot is ready.
         await db_manager.get()
         for name, cog in (
-            ("SobCog", SobCog(bot, settings, sob_repo, shop_repo, profile_service)),
+            ("SobCog", SobCog(bot, settings, sob_repo, shop_repo, profile_service, economy)),
             ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo, profile_service)),
-            ("ShopCog", ShopCog(bot, settings, shop_repo, sob_repo)),
+            ("ShopCog", ShopCog(bot, settings, shop_repo, sob_repo, economy)),
             ("HelpCog", HelpCog(bot, settings)),
             ("PermsCog", PermsCog(bot, settings, sob_repo)),
             ("AnnounceCog", AnnounceCog(bot, settings, sob_repo)),
             ("GatingCog", GatingCog(bot, settings, gate)),
-            ("AboutCog", AboutCog(bot, settings)),
+            ("EconomyCog", EconomyCog(bot, settings, sob_repo)),
+            ("DailyCog", DailyCog(bot, settings, sob_repo)),
+            ("AboutCog", AboutCog(bot, settings, sob_repo)),
         ):
             try:
                 await bot.add_cog(cog)

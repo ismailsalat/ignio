@@ -14,9 +14,10 @@ class ShopRepo:
     Spends sobs via SobRepo so the leaderboard reflects the cost.
     """
 
-    def __init__(self, db_manager: DatabaseManager, sob_repo):
+    def __init__(self, db_manager: DatabaseManager, sob_repo, economy=None):
         self.db_manager = db_manager
         self.sob_repo = sob_repo
+        self.economy = economy
 
     async def _db(self):
         return await self.db_manager.get()
@@ -25,9 +26,10 @@ class ShopRepo:
     # catalog (built-in merged with per-guild custom/overrides)
     # ------------------------------------------------------------------
 
-    async def get_catalog(self, guild_id: int) -> list[dict[str, Any]]:
-        """Built-in items plus any enabled custom guild items. Guild rows with
-        a matching key override the built-in price/stock/enabled."""
+    async def get_catalog(self, guild_id: int, economy=None) -> list[dict[str, Any]]:
+        """Built-in items plus any enabled custom guild items. Built-in prices
+        auto-scale to the server economy (if `economy` is provided) unless an
+        admin override row exists. Guild rows override price/stock/enabled."""
         db = await self._db()
         rows = await db.fetchall(
             "SELECT item_key, name, category, icon, price, stock, enabled, description FROM shop_items WHERE guild_id = ?",
@@ -35,12 +37,23 @@ class ShopRepo:
         )
         overrides = {str(r["item_key"]): dict(r) for r in rows}
 
+        # auto-scaled prices for built-in items (median-based, whale-proof)
+        auto_prices = {}
+        if economy is not None:
+            try:
+                auto_prices = await economy.all_item_prices(guild_id)
+            except Exception:
+                auto_prices = {}
+
         catalog: list[dict[str, Any]] = []
         # built-ins first (with any overrides applied)
         for key, base in BUILTIN_ITEMS.items():
             item = dict(base)
             item["stock"] = -1
             item["enabled"] = True
+            # auto-price unless admin overrode it
+            if key in auto_prices and key not in overrides:
+                item["price"] = auto_prices[key]
             if key in overrides:
                 o = overrides[key]
                 item["price"] = int(o["price"])
@@ -74,7 +87,7 @@ class ShopRepo:
         """Resolve an item by its key OR its display name, case-insensitively.
         So 'shield', 'Shield', 'basic shield', 'Basic Shield' all work."""
         query = item_key.strip().lower()
-        catalog = await self.get_catalog(guild_id)
+        catalog = await self.get_catalog(guild_id, economy=self.economy)
         # exact key match first
         for item in catalog:
             if item["enabled"] and item["key"].lower() == query:
@@ -180,6 +193,19 @@ class ShopRepo:
         await self.sob_repo.adjust_received(guild_id, user_id, -cost)
         await self._add_to_inventory(db, guild_id, user_id, canonical_key, qty, ts)
         await db.commit()
+
+        # Tax/sink: for built-in PvP items, a % of the cost is counted as burned
+        # (the sobs already left the user; this records the destroyed portion so
+        # the economy panel can show the sink working). Server items aren't taxed.
+        if self.economy is not None and canonical_key in BUILTIN_ITEMS:
+            try:
+                tax_pct = await self.economy.get_tax_pct(guild_id)
+                burned = int(cost * tax_pct / 100)
+                if burned > 0:
+                    await self.economy.add_burned(guild_id, burned)
+            except Exception:
+                pass
+
         return True, "ok", item
 
     # ------------------------------------------------------------------
@@ -253,7 +279,8 @@ class ShopRepo:
         await self.sob_repo.set_guild_setting(guild_id, "boost_multiplier", str(value))
         return value
 
-    async def apply_boost_steal(self, guild_id: int, snitcher_id: int, target_id: int, sobs_wiped: int) -> int:
+    async def apply_boost_steal(self, guild_id: int, snitcher_id: int, target_id: int,
+                                sobs_wiped: int, multiplier: float | None = None) -> int:
         """
         Boosted snitch: drain (sobs_wiped * multiplier) from the target and give
         the same amount to the snitcher — but never more than the target actually
@@ -263,7 +290,7 @@ class ShopRepo:
         """
         if sobs_wiped <= 0:
             return 0
-        mult = await self.get_boost_multiplier(guild_id)
+        mult = multiplier if multiplier is not None else await self.get_boost_multiplier(guild_id)
         desired = int(round(sobs_wiped * mult))
 
         # cap by what the target currently has (conserved transfer)
@@ -277,3 +304,16 @@ class ShopRepo:
         await self.sob_repo.adjust_received(guild_id, target_id, -transfer)
         await self.sob_repo.adjust_received(guild_id, snitcher_id, +transfer)
         return transfer
+
+    async def apply_tax_audit(self, guild_id: int, auditor_id: int, target_id: int,
+                              pct: float = 0.05, cap: int = 5000) -> int:
+        """Instantly steal pct of the target's sobs (capped). Conserved transfer —
+        the auditor gains exactly what the target loses; nothing is minted."""
+        target_stats = await self.sob_repo.get_user_stats(guild_id, target_id)
+        bal = int(target_stats["sobs_alltime"])
+        amount = min(int(bal * pct), cap, bal)
+        if amount <= 0:
+            return 0
+        await self.sob_repo.adjust_received(guild_id, target_id, -amount)
+        await self.sob_repo.adjust_received(guild_id, auditor_id, +amount)
+        return amount

@@ -26,11 +26,14 @@ COMMAND_CATEGORY: dict[str, str] = {
     "buy": "shop",
     "use": "shop",
     "me": "shop",
+    "daily": "shop",
     # Profile (the !sob set lives under sob, but the card itself is 'sobs')
     # Admin / config (never disablable)
     "admin": "admin",
     "perms": "admin",
     "announce": "admin",
+    "rate": "admin",
+    "economy": "admin",
 }
 
 CATEGORIES = ("sobs", "shop", "profile", "admin")

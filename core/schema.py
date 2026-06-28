@@ -258,11 +258,40 @@ CREATE INDEX IF NOT EXISTS idx_shop_inventory_user
 # would make these get skipped as "already applied" — the new schema starts at
 # 200. On a fresh DB these simply run in order; on the old DB they run *after*
 # the legacy 1/2/3, creating the clean tables and backfilling from legacy data.
+
+# Economy snapshots: one row per guild per day, recording total sob supply so the
+# !economy command can show an inflation trend graph. Purely additive.
+_ECONOMY = """
+CREATE TABLE IF NOT EXISTS economy_snapshots (
+    guild_id   INTEGER NOT NULL,
+    day        TEXT    NOT NULL,          -- YYYY-MM-DD (UTC)
+    total_sobs INTEGER NOT NULL DEFAULT 0,
+    players    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, day)
+);
+"""
+
+
+# Daily claim tracking: last claim time + streak per user per guild. Additive.
+_DAILY = """
+CREATE TABLE IF NOT EXISTS daily_claims (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    last_claim  INTEGER NOT NULL DEFAULT 0,
+    streak      INTEGER NOT NULL DEFAULT 0,
+    total_claimed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
+"""
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
     (202, "backfill_legacy_sob", _LEGACY_BACKFILL),
     (203, "shop_system", _SHOP),
+    (204, "economy_snapshots", _ECONOMY),
+    (205, "daily_claims", _DAILY),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

@@ -8,12 +8,27 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "0.7.2"
-RELEASED = "2026-06-27"        # date of this version (YYYY-MM-DD)
-CODENAME = "Leaderboard Cards"
+VERSION = "0.8.0"
+RELEASED = "2026-06-28"        # date of this version (YYYY-MM-DD)
+CODENAME = "Economy Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+            {
+        "version": "0.8.0",
+        "date": "2026-06-28",
+        "title": "Economy Update",
+        "notes": [
+            "!daily faucet with streak bonus + picture card",
+            "Auto-balancing shop: prices scale to YOUR server economy",
+            "Sob multiplier: reactions worth more on new/small servers",
+            "30% shop tax burns sobs (anti-inflation sink) — !tax",
+            "Exchange rate tools: !rate, !value, !worth, !economy",
+            "16 PvP items: shields, freezes, boosts, Tax Audit, King & more",
+            "Custom sob & fire icons, premium picture cards",
+            "Cleaner image !help with admin tags, one-time update notice",
+        ],
+    },
     {
         "version": "0.7.2",
         "date": "2026-06-27",

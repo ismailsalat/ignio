@@ -11,12 +11,13 @@ from core.sob.repo import SobRepo
 
 
 class SobCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, settings, sob_repo: SobRepo, shop_repo=None, profile_service=None):
+    def __init__(self, bot: commands.Bot, settings, sob_repo: SobRepo, shop_repo=None, profile_service=None, economy=None):
         self.bot = bot
         self.settings = settings
         self.sob_repo = sob_repo
         self.shop_repo = shop_repo
         self.profile = profile_service
+        self.economy = economy
 
     # ----- helpers -------------------------------------------------------
 
@@ -60,13 +61,25 @@ class SobCog(commands.Cog):
             return
 
         threshold = await self.sob_repo.get_snitch_threshold(payload.guild_id)
-        await self.sob_repo.add_sob(
+        added = await self.sob_repo.add_sob(
             guild_id=payload.guild_id,
             message_id=payload.message_id,
             reactor_id=payload.user_id,
             target_id=target_id,
             snitch_threshold=threshold,
         )
+
+        # Sob multiplier: base add_sob gives 1; if the server's multiplier is >1,
+        # credit the extra. <1 isn't applied to a single reaction (can't give
+        # fractional sobs), so the multiplier floors at giving the base 1.
+        if added and self.economy is not None:
+            try:
+                mult = await self.economy.get_sob_multiplier(payload.guild_id)
+                extra = int(round(mult)) - 1
+                if extra > 0:
+                    await self.sob_repo.adjust_received(payload.guild_id, target_id, extra)
+            except Exception:
+                pass
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
@@ -305,13 +318,22 @@ class SobCog(commands.Cog):
         if success:
             threshold = await self.sob_repo.get_snitch_threshold(guild.id)
 
-            # Boost: if the snitcher has boost active, steal (removed × multiplier)
-            # from the target, capped by the target's balance (conserved transfer).
+            # Boost family: if the snitcher has any boost-type effect active,
+            # steal (removed × that item's multiplier), capped by target balance.
             boosted_amount = 0
-            if self.shop_repo is not None and await self.shop_repo.has_effect(guild.id, user.id, "boost"):
-                boosted_amount = await self.shop_repo.apply_boost_steal(
-                    guild.id, user.id, target_msg.author.id, removed,
-                )
+            if self.shop_repo is not None:
+                from core.shop.catalog import BUILTIN_ITEMS
+                active_mult = None
+                for ik, it in BUILTIN_ITEMS.items():
+                    if it.get("mechanic", "").startswith("steal_mult"):
+                        eff = it.get("effect_key") or ik
+                        if await self.shop_repo.has_effect(guild.id, user.id, eff):
+                            m = float(it.get("multiplier", 1.5))
+                            active_mult = max(active_mult or 0, m)
+                if active_mult is not None:
+                    boosted_amount = await self.shop_repo.apply_boost_steal(
+                        guild.id, user.id, target_msg.author.id, removed, multiplier=active_mult,
+                    )
 
             snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
             stats = await self.sob_repo.get_user_stats(guild.id, user.id)

@@ -11,6 +11,18 @@ from core.shop.catalog import (
 from core.time_utils import now_ts
 
 
+def _dur_text(seconds: int) -> str:
+    """Human duration like '5 minutes' / '30 minutes' / '1 hour'. Always matches
+    the real effect length so messages can never be wrong again."""
+    if not seconds:
+        return "a while"
+    m = seconds // 60
+    if m < 60:
+        return f"{m} minute" + ("s" if m != 1 else "")
+    h = m // 60
+    return f"{h} hour" + ("s" if h != 1 else "")
+
+
 def _is_admin(ctx: commands.Context, settings) -> bool:
     owner_ids = set(getattr(settings, "owner_ids", ()) or ())
     if ctx.author.id in owner_ids:
@@ -51,33 +63,72 @@ async def do_use(shop, guild_id, user, item_key, target=None):
 
     effect_key = builtin["effect_key"]
     duration = builtin.get("duration", 0)
+    mechanic = builtin.get("mechanic", "")
     expires_at = now_ts() + duration if duration else 0
+    is_targeted = key in TARGETED_EFFECTS
 
-    if effect_key in TARGETED_EFFECTS:
+    # ---- instant steal (Tax Audit): no effect stored, immediate transfer ----
+    if mechanic == "instant_steal_pct":
         if target is None:
             return False, embeds.error_embed(f"`{key}` needs a target. Use `!use {key} @user`.")
         if target.id == user.id:
             return False, embeds.error_embed("You can't target yourself.")
         if getattr(target, "bot", False):
             return False, embeds.error_embed("You can't target a bot.")
-        if await shop.has_effect(guild_id, target.id, effect_key):
-            return False, embeds.error_embed(f"{target.mention} already has **{effect_key}** active.")
+        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        await db.commit()
+        stolen = await shop.apply_tax_audit(
+            guild_id, user.id, target.id,
+            pct=builtin.get("steal_pct", 0.05), cap=builtin.get("steal_cap", 5000),
+        )
+        if stolen <= 0:
+            return True, embeds.used_embed(
+                f"{builtin['icon']} {builtin['name']}",
+                f"{target.mention} had nothing worth taking.")
+        return True, embeds.used_embed(
+            f"{builtin['icon']} {builtin['name']}",
+            f"{user.mention} audited {target.mention} and seized **{stolen:,} sobs**!")
+
+    # ---- targeted, duration-based debuffs (freeze, slow, marked, jail) ----
+    if is_targeted:
+        if target is None:
+            return False, embeds.error_embed(f"`{key}` needs a target. Use `!use {key} @user`.")
+        if target.id == user.id:
+            return False, embeds.error_embed("You can't target yourself.")
+        if getattr(target, "bot", False):
+            return False, embeds.error_embed("You can't target a bot.")
+        if effect_key and await shop.has_effect(guild_id, target.id, effect_key):
+            return False, embeds.error_embed(f"{target.mention} already has that effect active.")
         await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
         await db.commit()
         await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id, expires_at=expires_at)
+        verbs = {
+            "block_tokens": f"froze {target.mention} — no snitching",
+            "halve_earnings": f"cursed {target.mention} — half sob earnings",
+            "mark_bounty": f"marked {target.mention} — snitching them pays more",
+            "lock_items": f"jailed {target.mention} — no items",
+        }
+        verb = verbs.get(mechanic, f"hit {target.mention}")
         return True, embeds.used_embed(
             f"{builtin['icon']} {builtin['name']} used",
-            f"{user.mention} froze {target.mention} for 30 minutes — no snitching for them.",
-        )
+            f"{user.mention} {verb} for {_dur_text(duration)}.")
 
-    # self effect
-    if await shop.has_effect(guild_id, user.id, effect_key):
-        return False, embeds.error_embed(f"You already have **{effect_key}** active.")
+    # ---- self effects (shields, boosts, buffs) ----
+    if effect_key and await shop.has_effect(guild_id, user.id, effect_key):
+        return False, embeds.error_embed(f"You already have that effect active.")
     await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
     await db.commit()
     await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=expires_at)
-    verb = "You're protected from snitches" if effect_key == "shield" else "Your snitches are boosted"
-    return True, embeds.used_embed(f"{builtin['icon']} {builtin['name']} active", f"{verb} for 30 minutes.")
+    if mechanic == "block_snitch" or mechanic == "block_charges":
+        msg = "You're protected from snitches"
+    elif mechanic == "reflect_next":
+        msg = "Your next attacker gets reflected"
+    elif mechanic == "earn_bonus":
+        msg = "Your sob earnings are boosted"
+    else:
+        msg = "Your snitches are boosted"
+    tail = f" for {_dur_text(duration)}." if duration else "."
+    return True, embeds.used_embed(f"{builtin['icon']} {builtin['name']} active", f"{msg}{tail}")
 
 
 # ======================================================================
@@ -253,11 +304,12 @@ class UseButton(discord.ui.Button):
 # ======================================================================
 
 class ShopCog(commands.Cog):
-    def __init__(self, bot: commands.Bot, settings, shop_repo, sob_repo):
+    def __init__(self, bot: commands.Bot, settings, shop_repo, sob_repo, economy=None):
         self.bot = bot
         self.settings = settings
         self.shop = shop_repo
         self.sob_repo = sob_repo
+        self.economy = economy
 
     async def _can_manage(self, ctx) -> bool:
         from core import perms as _perms
@@ -482,21 +534,48 @@ class ShopCog(commands.Cog):
 
     @shop_group.command(name="additem")
     @commands.guild_only()
-    async def shop_additem(self, ctx: commands.Context, key: str, price: int, *, name: str):
+    async def shop_additem(self, ctx: commands.Context, key: str, price: str, *, name: str):
         if not await self._can_manage(ctx):
             await ctx.reply(embed=embeds.error_embed("Only server admins can add items."))
             return
         if key.lower() in BUILTIN_ITEMS:
             await ctx.reply(embed=embeds.error_embed("That key is reserved by a built-in item."))
             return
+
+        # Price can be a plain sob number ("250000") OR a dollar value ("$10"),
+        # which the bot auto-converts using this server's exchange rate.
+        price_str = price.strip()
+        converted_note = ""
+        if price_str.startswith("$"):
+            if self.economy is None:
+                await ctx.reply(embed=embeds.error_embed("Dollar pricing isn't available right now — use a sob number."))
+                return
+            try:
+                usd = float(price_str[1:])
+            except ValueError:
+                await ctx.reply(embed=embeds.error_embed("Bad dollar amount. Try `$10`."))
+                return
+            sob_price = await self.economy.usd_to_sobs(ctx.guild.id, usd)
+            rate = await self.economy.get_rate(ctx.guild.id)
+            converted_note = f"\n💱 ${usd:,.2f} → **{sob_price:,} sobs** (at {rate:,}/$1)"
+        else:
+            try:
+                sob_price = int(price_str)
+            except ValueError:
+                await ctx.reply(embed=embeds.error_embed(
+                    f"Price must be a number of sobs (e.g. `5000`) or a dollar value (e.g. `$10`)."))
+                return
+
+        sob_price = max(0, sob_price)
         await self.shop.upsert_custom_item(
             ctx.guild.id, item_key=key.lower(), name=name, category="server",
-            price=max(0, price), icon="🎁", stock=-1, enabled=True,
+            price=sob_price, icon="🎁", stock=-1, enabled=True,
             description="Custom server reward — claim with !use, an admin delivers it.",
         )
         await ctx.reply(embed=embeds.used_embed(
             "Server item added",
-            f"🎁 **{name}** — `{price}` sobs (key `{key.lower()}`)\nUnlimited stock. Limit it with `{ctx.prefix}shop setstock {key.lower()} <n>`.",
+            f"🎁 **{name}** — `{sob_price:,}` sobs (key `{key.lower()}`){converted_note}\n"
+            f"Unlimited stock. Limit it with `{ctx.prefix}shop setstock {key.lower()} <n>`.",
         ))
 
     @shop_group.command(name="setstock")
