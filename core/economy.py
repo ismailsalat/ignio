@@ -14,6 +14,7 @@ RATE_KEY = "economy:rate"
 MULT_KEY = "economy:sob_mult"
 TAX_KEY = "economy:tax_pct"
 BURNED_KEY = "economy:total_burned"
+TREASURY_KEY = "economy:treasury"
 REF_KEY = "economy:ref_cached"
 
 DEFAULT_TAX_PCT = 30        # % of a built-in purchase that is burned
@@ -150,16 +151,39 @@ class Economy:
         return 1.0
 
     async def get_tax_pct(self, guild_id: int) -> int:
+        """Tax % added ON TOP of a built-in item's price. Auto-suggested from the
+        economy unless an admin pinned a fixed value."""
         raw = await self.repo.get_guild_setting(guild_id, TAX_KEY)
-        try:
-            v = int(raw)
-            return max(0, min(90, v))
-        except (TypeError, ValueError):
-            return DEFAULT_TAX_PCT
+        if raw not in (None, ""):
+            try:
+                return max(0, min(50, int(raw)))
+            except (TypeError, ValueError):
+                pass
+        return await self.suggest_tax(guild_id)
 
-    async def set_tax_pct(self, guild_id: int, pct: int) -> None:
-        await self.repo.set_guild_setting(guild_id, TAX_KEY, str(max(0, min(90, int(pct)))))
+    async def set_tax_pct(self, guild_id: int, pct: int | None) -> None:
+        if pct is None:
+            await self.repo.set_guild_setting(guild_id, TAX_KEY, "")  # back to auto
+        else:
+            await self.repo.set_guild_setting(guild_id, TAX_KEY, str(max(0, min(50, int(pct)))))
 
+    async def suggest_tax(self, guild_id: int) -> int:
+        """Auto tax rate: gentle on new/small economies, higher when inflating."""
+        ref = await self.reference_balance(guild_id)
+        sig = await self.inflation_signal(guild_id)
+        if ref < 100:
+            base = 5
+        elif ref < 500:
+            base = 10
+        else:
+            base = 15
+        if sig["status"] == "red":
+            base += 10
+        elif sig["status"] == "yellow":
+            base += 5
+        return min(base, 30)
+
+    # ---- burned (anti-inflation sink: the base price is destroyed) ----
     async def add_burned(self, guild_id: int, amount: int) -> None:
         raw = await self.repo.get_guild_setting(guild_id, BURNED_KEY)
         try:
@@ -174,6 +198,66 @@ class Economy:
             return int(raw)
         except (TypeError, ValueError):
             return 0
+
+    # ---- treasury (the tax pot admins spend on events) ----
+    async def get_treasury(self, guild_id: int) -> int:
+        raw = await self.repo.get_guild_setting(guild_id, TREASURY_KEY)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    async def add_treasury(self, guild_id: int, amount: int, *, payer_id: int | None = None) -> None:
+        """Add tax to the treasury and log the payment for stats."""
+        cur = await self.get_treasury(guild_id)
+        await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur + max(0, amount)))
+        if payer_id is not None and amount > 0:
+            db = await self._db()
+            await db.execute(
+                "INSERT INTO tax_events (guild_id, user_id, amount, created_at) VALUES (?,?,?,?)",
+                (guild_id, payer_id, int(amount), int(time.time())),
+            )
+            await db.commit()
+
+    async def spend_treasury(self, guild_id: int, amount: int) -> bool:
+        """Remove sobs from the treasury (admin payout). Returns False if short."""
+        cur = await self.get_treasury(guild_id)
+        if amount > cur:
+            return False
+        await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur - amount))
+        return True
+
+    async def treasury_stats(self, guild_id: int) -> dict:
+        """Stats for the treasury card: pot, taxed today/week/all, recent, top."""
+        db = await self._db()
+        now = int(time.time())
+        day_ago, week_ago = now - 86400, now - 604800
+
+        async def _sum(since=None):
+            if since is None:
+                r = await db.fetchone("SELECT COALESCE(SUM(amount),0) AS s FROM tax_events WHERE guild_id=?", (guild_id,))
+            else:
+                r = await db.fetchone("SELECT COALESCE(SUM(amount),0) AS s FROM tax_events WHERE guild_id=? AND created_at>=?", (guild_id, since))
+            return int(r["s"])
+
+        recent_rows = await db.fetchall(
+            "SELECT user_id, amount, created_at FROM tax_events WHERE guild_id=? ORDER BY created_at DESC LIMIT 5",
+            (guild_id,))
+        top_rows = await db.fetchall(
+            "SELECT user_id, SUM(amount) AS total FROM tax_events WHERE guild_id=? GROUP BY user_id ORDER BY total DESC LIMIT 1",
+            (guild_id,))
+        payers = await db.fetchone("SELECT COUNT(DISTINCT user_id) AS c FROM tax_events WHERE guild_id=?", (guild_id,))
+
+        return {
+            "treasury": await self.get_treasury(guild_id),
+            "today": await _sum(day_ago),
+            "week": await _sum(week_ago),
+            "alltime": await _sum(),
+            "payers": int(payers["c"]) if payers else 0,
+            "recent": [{"user_id": int(r["user_id"]), "amount": int(r["amount"])} for r in recent_rows],
+            "top": ({"user_id": int(top_rows[0]["user_id"]), "total": int(top_rows[0]["total"])}
+                    if top_rows else None),
+        }
 
     async def recommend_rate(self, guild_id: int) -> dict:
         """Suggest a sobs-per-dollar rate anchored to player effort.

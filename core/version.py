@@ -8,12 +8,25 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "0.8.0"
+VERSION = "0.8.2"
 RELEASED = "2026-06-28"        # date of this version (YYYY-MM-DD)
-CODENAME = "Economy Update"
+CODENAME = "Treasury Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "0.8.2",
+        "date": "2026-06-28",
+        "title": "Treasury Update",
+        "notes": [
+            "Shop tax now adds ON TOP and feeds a server treasury (pot)",
+            "Tax auto-adjusts to your economy (admins can override: !tax)",
+            "!treasury shows the pot + stats; !treasury give pays players",
+            "!rebalance refreshes shop prices on demand (locked between)",
+            "Fixed shop showing wrong prices vs what was charged",
+            "New !guide — explains how the bot works for newcomers",
+        ],
+    },
             {
         "version": "0.8.0",
         "date": "2026-06-28",

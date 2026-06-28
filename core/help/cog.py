@@ -133,6 +133,36 @@ class HelpCog(commands.Cog):
             cats.append({"label": label, "desc": desc, "count": count})
         return make_help_overview(cats)
 
+    @commands.command(name="guide", aliases=["howto", "explain", "info2"])
+    async def guide_cmd(self, ctx):
+        """Newcomer explainer: what the bot does + how to earn/spend sobs."""
+        try:
+            from core.profile.small_cards import guide_card
+            import io
+            img = guide_card()
+            buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+            await ctx.reply(file=discord.File(buf, filename="guide.png"))
+            return
+        except Exception as e:
+            print(f"[Ignio][Help] guide card failed, using embed: {e}")
+        p = ctx.prefix
+        e = discord.Embed(title="How Ignio Works",
+                          description="The sob economy, in a nutshell.", color=ACCENT)
+        e.add_field(name="Ways to earn sobs", value=(
+            "• React to messages with a sob emoji\n"
+            "• Snitch on others to wipe their sobs\n"
+            f"• Claim `{p}daily` — keep a streak for more\n"
+            "• Win admin events & giveaways\n"
+            "• Receive treasury payouts from admins\n"
+            "• ...more ways coming soon"), inline=False)
+        e.add_field(name="What to spend them on", value=(
+            "• Buffs & boosts — steal more sobs\n"
+            "• Shields — protect yourself\n"
+            "• Debuffs — freeze, curse & jail rivals\n"
+            "• Server items — Nitro, gift cards & more"), inline=False)
+        e.set_footer(text=f"{p}help for the full command list")
+        await ctx.reply(embed=e)
+
     @commands.command(name="help", aliases=["commands", "cmds"])
     async def help_cmd(self, ctx, section: str | None = None):
         p = ctx.prefix

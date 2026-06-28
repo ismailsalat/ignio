@@ -28,8 +28,11 @@ class ShopRepo:
 
     async def get_catalog(self, guild_id: int, economy=None) -> list[dict[str, Any]]:
         """Built-in items plus any enabled custom guild items. Built-in prices
-        auto-scale to the server economy (if `economy` is provided) unless an
-        admin override row exists. Guild rows override price/stock/enabled."""
+        auto-scale to the server economy unless an admin override row exists.
+        Uses self.economy by default so the displayed price always matches what
+        buy() actually charges."""
+        if economy is None:
+            economy = self.economy
         db = await self._db()
         rows = await db.fetchall(
             "SELECT item_key, name, category, icon, price, stock, enabled, description FROM shop_items WHERE guild_id = ?",
@@ -172,8 +175,20 @@ class ShopRepo:
 
         cost = int(item["price"]) * qty
 
+        # Tax is added ON TOP for built-in PvP items (server items are untaxed).
+        # The base price is burned (sink); the tax goes to the server treasury.
+        tax_amount = 0
+        is_builtin = item["key"] in BUILTIN_ITEMS
+        if self.economy is not None and is_builtin:
+            try:
+                tax_pct = await self.economy.get_tax_pct(guild_id)
+                tax_amount = int(cost * tax_pct / 100)
+            except Exception:
+                tax_amount = 0
+        total_charge = cost + tax_amount
+
         stats = await self.sob_repo.get_user_stats(guild_id, user_id)
-        if stats["sobs_alltime"] < cost:
+        if stats["sobs_alltime"] < total_charge:
             return False, "not_enough_sobs", item
 
         db = await self._db()
@@ -189,23 +204,24 @@ class ShopRepo:
                 (qty, ts, guild_id, canonical_key),
             )
 
-        # charge sobs (lowers leaderboard) then grant item
-        await self.sob_repo.adjust_received(guild_id, user_id, -cost)
+        # charge sobs (base + tax) — lowers leaderboard — then grant item
+        await self.sob_repo.adjust_received(guild_id, user_id, -total_charge)
         await self._add_to_inventory(db, guild_id, user_id, canonical_key, qty, ts)
         await db.commit()
 
-        # Tax/sink: for built-in PvP items, a % of the cost is counted as burned
-        # (the sobs already left the user; this records the destroyed portion so
-        # the economy panel can show the sink working). Server items aren't taxed.
-        if self.economy is not None and canonical_key in BUILTIN_ITEMS:
+        # Split the charge: base is burned (sink), tax goes to the treasury pot.
+        if self.economy is not None and is_builtin:
             try:
-                tax_pct = await self.economy.get_tax_pct(guild_id)
-                burned = int(cost * tax_pct / 100)
-                if burned > 0:
-                    await self.economy.add_burned(guild_id, burned)
+                await self.economy.add_burned(guild_id, cost)
+                if tax_amount > 0:
+                    await self.economy.add_treasury(guild_id, tax_amount, payer_id=user_id)
             except Exception:
                 pass
 
+        # expose what was charged so the buy embed can show it
+        item = dict(item)
+        item["_charged"] = total_charge
+        item["_tax"] = tax_amount
         return True, "ok", item
 
     # ------------------------------------------------------------------

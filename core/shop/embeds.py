@@ -83,7 +83,13 @@ def effects_embed(member: discord.Member, effects: list[dict]) -> discord.Embed:
 def buy_success_embed(member: discord.Member, item: dict, qty: int, new_balance: int) -> discord.Embed:
     e = discord.Embed(title="✅ Purchased", color=ACCENT)
     e.add_field(name="Item", value=f"{item['icon']} {item['name']} ×{qty}", inline=True)
-    e.add_field(name="Cost", value=f"`{item['price'] * qty}` sobs", inline=True)
+    charged = item.get("_charged", item["price"] * qty)
+    tax = item.get("_tax", 0)
+    if tax > 0:
+        base = item["price"] * qty
+        e.add_field(name="Cost", value=f"`{charged}` sobs\n({base} + {tax} tax)", inline=True)
+    else:
+        e.add_field(name="Cost", value=f"`{charged}` sobs", inline=True)
     e.add_field(name="Balance", value=f"`{new_balance}` sobs", inline=True)
     e.set_footer(text="It's in your inventory — use it with !use")
     return e

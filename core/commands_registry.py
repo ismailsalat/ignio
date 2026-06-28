@@ -53,7 +53,9 @@ COMMANDS = [
     {"name": "worth", "cat": "economy", "desc": "How many sobs a $ amount is", "usage": "worth <$>"},
     {"name": "economy", "cat": "economy", "desc": "Economy health card", "usage": "economy"},
     {"name": "rate set", "cat": "economy", "desc": "Set the exchange rate", "usage": "rate set <sobs>", "admin": True},
-    {"name": "tax", "cat": "economy", "desc": "Show/set the shop burn tax", "usage": "tax [percent]", "admin": True},
+    {"name": "tax", "cat": "economy", "desc": "Show/set the shop tax (feeds the treasury)", "usage": "tax [percent|auto]", "admin": True},
+    {"name": "treasury", "cat": "economy", "desc": "Server tax pot + stats", "usage": "treasury", "admin": True},
+    {"name": "treasury give", "cat": "economy", "desc": "Pay sobs from the treasury", "usage": "treasury give @user <amount>", "admin": True},
     {"name": "multiplier", "cat": "economy", "desc": "Show/set the sob multiplier", "usage": "mult [number|auto]", "admin": True},
     {"name": "rebalance", "cat": "economy", "desc": "Refresh shop prices to the current economy", "usage": "rebalance", "admin": True},
 
@@ -79,6 +81,7 @@ COMMANDS = [
 
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},
+    {"name": "guide", "cat": "info", "desc": "How the bot works (for newcomers)", "usage": "guide"},
     {"name": "about", "cat": "info", "desc": "Bot info, version & latest updates", "usage": "about"},
     {"name": "version", "cat": "info", "desc": "Current version", "usage": "version"},
     {"name": "rate", "cat": "info", "desc": "Exchange rate", "usage": "rate"},  # cross-listed for discovery

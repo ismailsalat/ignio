@@ -85,3 +85,109 @@ def about_card(version, codename, released, uptime, servers, ping, notes) -> Ima
 
     img.putalpha(_round_mask((W, H), 28))
     return img
+
+
+def treasury_card(stats: dict, name_lookup) -> Image.Image:
+    """Server treasury stats. name_lookup(uid) -> display string."""
+    W = 760
+    recent = stats.get("recent", [])[:5]
+    H = 320 + max(1, len(recent)) * 34 + 40
+    img, d = _base(W, H)
+    PAD = 40
+
+    si = icon("sob", 52)
+    if si: img.alpha_composite(si, (PAD, 32))
+    d.text((PAD + 66, 36), "Server Treasury", font=f_title(36), fill=INK)
+    d.text((PAD + 68, 82), "tax collected from shop purchases", font=f_reg(18), fill=DIM)
+
+    # big pot number
+    d.text((PAD, 122), "IN THE POT", font=f_label(15), fill=DIM)
+    pi = icon("sob", 40)
+    if pi: img.alpha_composite(pi, (PAD, 146))
+    d.text((PAD + 50, 144), f"{_fmt(stats.get('treasury', 0))} sobs", font=f_num(40), fill=AMBER)
+
+    # taxed chips
+    chips = [("Today", stats.get("today", 0)), ("This week", stats.get("week", 0)),
+             ("All-time", stats.get("alltime", 0)), ("Taxpayers", stats.get("payers", 0))]
+    cw = (W - PAD * 2 - 30) / 4
+    for i, (k, v) in enumerate(chips):
+        x = PAD + i * (cw + 10)
+        d.rounded_rectangle([x, 210, x + cw, 276], radius=14, fill=PANEL)
+        d.text((x + 14, 222), k, font=f_label(12), fill=DIM)
+        d.text((x + 14, 242), _fmt(v), font=f_num(18), fill=INK)
+
+    # recent taxpayers
+    d.text((PAD, 292), "RECENT TAXPAYERS", font=f_label(14), fill=AMBER)
+    y = 320
+    if recent:
+        for r in recent:
+            d.text((PAD, y), name_lookup(r["user_id"])[:24], font=f_reg(17), fill=INK)
+            amt = f"+{_fmt(r['amount'])}"
+            d.text((W - PAD - _text_w(d, amt, f_num(17)), y), amt, font=f_num(17), fill=SOFT)
+            y += 34
+    else:
+        d.text((PAD, y), "No tax collected yet.", font=f_reg(17), fill=DIM)
+        y += 34
+
+    # all-time top
+    top = stats.get("top")
+    if top:
+        d.text((PAD, y + 6), f"Top contributor: {name_lookup(top['user_id'])[:20]} "
+               f"({_fmt(top['total'])})", font=f_reg(16), fill=DIM)
+
+    img.putalpha(_round_mask((W, H), 28))
+    return img
+
+
+def guide_card() -> Image.Image:
+    """Newcomer 'how this bot works' explainer — easy bullet points."""
+    W = 820
+    earn = [
+        "React to messages with a sob emoji",
+        "Snitch on others to wipe their sobs (and steal with boosts)",
+        "Claim your daily sobs — keep a streak for more",
+        "Win admin events & giveaways",
+        "Receive treasury payouts from admins",
+        "...more ways coming soon",
+    ]
+    spend = [
+        "Buffs & boosts — steal more sobs from others",
+        "Shields — protect yourself from snitches",
+        "Debuffs — freeze, curse & jail your rivals",
+        "Server items — Nitro, gift cards & more",
+    ]
+    H = 230 + len(earn) * 38 + 80 + len(spend) * 38 + 50
+    img, d = _base(W, H)
+    PAD = 44
+
+    si = icon("sob", 60)
+    if si: img.alpha_composite(si, (PAD, 34))
+    d.text((PAD + 78, 38), "How Ignio Works", font=f_title(40), fill=INK)
+    d.text((PAD + 80, 88), "the sob economy, in a nutshell", font=f_reg(20), fill=DIM)
+
+    # EARN section
+    y = 156
+    d.text((PAD, y), "WAYS TO EARN SOBS", font=f_label(17), fill=AMBER)
+    y += 34
+    for line in earn:
+        si2 = icon("sob", 22)
+        if si2: img.alpha_composite(si2, (PAD, y - 2))
+        d.text((PAD + 34, y), line, font=f_reg(20), fill=INK)
+        y += 38
+
+    # SPEND section
+    y += 26
+    d.text((PAD, y), "WHAT TO SPEND THEM ON", font=f_label(17), fill=SOFT)
+    y += 34
+    for line in spend:
+        d.ellipse([PAD + 4, y + 7, PAD + 16, y + 19], fill=SOFT)
+        d.text((PAD + 34, y), line, font=f_reg(20), fill=INK)
+        y += 38
+
+    # footer line
+    y += 14
+    d.text((PAD, y), "Sobs are your status — spending lowers your rank, so choose wisely.",
+           font=f_reg(17), fill=DIM)
+
+    img.putalpha(_round_mask((W, H), 28))
+    return img

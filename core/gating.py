@@ -37,6 +37,7 @@ COMMAND_CATEGORY: dict[str, str] = {
     "rebalance": "admin",
     "tax": "admin",
     "multiplier": "admin",
+    "treasury": "admin",
 }
 
 CATEGORIES = ("sobs", "shop", "profile", "admin")

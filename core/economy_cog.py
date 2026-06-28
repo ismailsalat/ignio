@@ -104,23 +104,90 @@ class EconomyCog(commands.Cog):
         e.set_footer(text="Prices auto-rebalance daily too.")
         await ctx.reply(embed=e)
 
+    @commands.group(name="treasury", aliases=["pot", "vault"], invoke_without_command=True)
+    @commands.guild_only()
+    async def treasury_cmd(self, ctx):
+        if not _is_admin(ctx.author, self.settings):
+            await ctx.reply(embed=self._err("Only admins can view the treasury.")); return
+        gid = ctx.guild.id
+        stats = await self.eco.treasury_stats(gid)
+
+        def name_lookup(uid):
+            m = ctx.guild.get_member(uid)
+            if not m:
+                return f"user {uid}"
+            try:
+                from core.profile.render import clean_name, renderable
+                disp = clean_name(m.display_name)
+                return disp if renderable(disp) else m.name
+            except Exception:
+                return m.display_name
+
+        try:
+            from core.profile.small_cards import treasury_card
+            import io
+            img = treasury_card(stats, name_lookup)
+            buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+            await ctx.reply(file=discord.File(buf, filename="treasury.png"))
+            return
+        except Exception as e:
+            print(f"[Ignio][Treasury] card failed, using embed: {e}")
+
+        em = discord.Embed(title="Server Treasury", color=ACCENT)
+        em.description = f"**{_fmt(stats['treasury'])} sobs** in the pot."
+        em.add_field(name="Today", value=_fmt(stats["today"]), inline=True)
+        em.add_field(name="This week", value=_fmt(stats["week"]), inline=True)
+        em.add_field(name="All-time", value=_fmt(stats["alltime"]), inline=True)
+        em.set_footer(text=f"{ctx.prefix}treasury give @user <amount> to pay out")
+        await ctx.reply(embed=em)
+
+    @treasury_cmd.command(name="give", aliases=["pay", "payout"])
+    @commands.guild_only()
+    async def treasury_give(self, ctx, member: discord.Member = None, amount: int = None):
+        if not _is_admin(ctx.author, self.settings):
+            await ctx.reply(embed=self._err("Only admins can pay out the treasury.")); return
+        if member is None or amount is None or amount <= 0:
+            await ctx.reply(embed=self._err(f"Usage: `{ctx.prefix}treasury give @user <amount>`.")); return
+        gid = ctx.guild.id
+        ok = await self.eco.spend_treasury(gid, amount)
+        if not ok:
+            pot = await self.eco.get_treasury(gid)
+            await ctx.reply(embed=self._err(f"The treasury only has **{_fmt(pot)}** sobs.")); return
+        new_bal = await self.eco.repo.adjust_received(gid, member.id, amount)
+        e = discord.Embed(title="✅ Treasury payout", color=ACCENT)
+        e.description = (f"Gave **{_fmt(amount)} sobs** to {member.mention} from the treasury.\n"
+                        f"Their balance: **{_fmt(new_bal)}** · Pot left: **{_fmt(await self.eco.get_treasury(gid))}**")
+        await ctx.reply(embed=e)
+
     @commands.command(name="tax")
     @commands.guild_only()
-    async def tax_cmd(self, ctx, pct: int | None = None):
+    async def tax_cmd(self, ctx, pct: str | None = None):
+        gid = ctx.guild.id
         if pct is None:
-            cur = await self.eco.get_tax_pct(ctx.guild.id)
-            burned = await self.eco.get_burned(ctx.guild.id)
+            cur = await self.eco.get_tax_pct(gid)
+            suggested = await self.eco.suggest_tax(gid)
+            pot = await self.eco.get_treasury(gid)
             e = discord.Embed(title="Shop tax", color=ACCENT)
-            e.description = (f"**{cur}%** of every built-in purchase is burned.\n"
-                             f"Total burned so far: **{_fmt(burned)} sobs**.")
-            e.set_footer(text=f"Admins: {ctx.prefix}tax <percent>")
+            e.description = (f"**{cur}%** is added on top of built-in items.\n"
+                             f"That tax goes to the **server treasury** (now **{_fmt(pot)}** sobs).\n"
+                             f"Auto-suggested for this economy: **{suggested}%**.")
+            e.set_footer(text=f"Admins: {ctx.prefix}tax <percent> · {ctx.prefix}tax auto · {ctx.prefix}treasury")
             await ctx.reply(embed=e)
             return
         if not _is_admin(ctx.author, self.settings):
             await ctx.reply(embed=self._err("Only admins can set the tax.")); return
-        await self.eco.set_tax_pct(ctx.guild.id, pct)
+        if pct.lower() == "auto":
+            await self.eco.set_tax_pct(gid, None)
+            await ctx.reply(embed=discord.Embed(title="✅ Tax set to AUTO",
+                description="It now adjusts to the server economy automatically.", color=ACCENT))
+            return
+        try:
+            v = int(pct)
+        except ValueError:
+            await ctx.reply(embed=self._err("Give a number (e.g. `15`) or `auto`.")); return
+        await self.eco.set_tax_pct(gid, v)
         await ctx.reply(embed=discord.Embed(
-            title="✅ Tax updated", description=f"Built-in purchases now burn **{max(0,min(90,pct))}%**.",
+            title="✅ Tax updated", description=f"Built-in purchases now add **{max(0,min(50,v))}%** on top (to the treasury).",
             color=ACCENT))
 
     @commands.command(name="multiplier", aliases=["mult", "sobmult"])

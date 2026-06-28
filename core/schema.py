@@ -285,6 +285,18 @@ CREATE TABLE IF NOT EXISTS daily_claims (
 );
 """
 
+
+# Tax events: log of each tax payment for the treasury stats card. Additive.
+_TAX_LOG = """
+CREATE TABLE IF NOT EXISTS tax_events (
+    guild_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    amount     INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tax_events_guild ON tax_events(guild_id, created_at);
+"""
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -292,6 +304,7 @@ MIGRATIONS = [
     (203, "shop_system", _SHOP),
     (204, "economy_snapshots", _ECONOMY),
     (205, "daily_claims", _DAILY),
+    (206, "tax_events", _TAX_LOG),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the
