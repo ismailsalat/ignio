@@ -76,6 +76,7 @@ class AnnounceCog(commands.Cog):
         # build the embed
         embed = discord.Embed(title=title, description=body, color=ACCENT)
         embed.set_footer(text=f"Announced by {ctx.author.display_name}")
+        embed.set_footer(text=f"Announced by {ctx.author.display_name}")
         embed.timestamp = discord.utils.utcnow()
 
         # check we can post there

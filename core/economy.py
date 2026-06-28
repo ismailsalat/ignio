@@ -14,6 +14,7 @@ RATE_KEY = "economy:rate"
 MULT_KEY = "economy:sob_mult"
 TAX_KEY = "economy:tax_pct"
 BURNED_KEY = "economy:total_burned"
+REF_KEY = "economy:ref_cached"
 
 DEFAULT_TAX_PCT = 30        # % of a built-in purchase that is burned
 
@@ -73,7 +74,22 @@ class Economy:
     # ---- auto-balance: reference, prices, multiplier, tax -----------------
 
     async def reference_balance(self, guild_id: int) -> int:
-        """Median balance of active players (>=10 sobs), floored. Whale-proof."""
+        """Cached reference balance used for pricing. Stays stable between
+        rebalances (set by !rebalance or the daily loop) so prices don't drift
+        mid-day. Falls back to a live compute if nothing's cached yet."""
+        raw = await self.repo.get_guild_setting(guild_id, REF_KEY)
+        try:
+            v = int(raw)
+            if v > 0:
+                return max(REF_FLOOR, v)
+        except (TypeError, ValueError):
+            pass
+        # nothing cached yet — compute and cache it now
+        return await self.recompute_reference(guild_id)
+
+    async def recompute_reference(self, guild_id: int) -> int:
+        """Recalculate the median-of-active reference and CACHE it. Returns it.
+        Called by !rebalance and the daily auto-rebalance."""
         db = await self._db()
         rows = await db.fetchall(
             "SELECT sobs_received_alltime AS s FROM sob_users "
@@ -83,10 +99,13 @@ class Economy:
         )
         vals = [int(r["s"]) for r in rows]
         if not vals:
-            return REF_FLOOR
-        mid = len(vals) // 2
-        median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
-        return max(REF_FLOOR, int(median))
+            ref = REF_FLOOR
+        else:
+            mid = len(vals) // 2
+            median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+            ref = max(REF_FLOOR, int(median))
+        await self.repo.set_guild_setting(guild_id, REF_KEY, str(ref))
+        return ref
 
     async def item_price(self, guild_id: int, item_key: str) -> int | None:
         """Auto-scaled price for a built-in item, or None if not a tiered item."""

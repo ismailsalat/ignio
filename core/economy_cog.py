@@ -33,12 +33,19 @@ class EconomyCog(commands.Cog):
 
     @tasks.loop(minutes=30)
     async def _snapshot_loop(self):
-        # snapshot every 30 min so the inflation graph fills in within hours
+        # snapshot every 30 min (graph), and recompute prices once per UTC day
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         for guild in list(self.bot.guilds):
             try:
                 await self.eco.record_snapshot(guild.id)
+                # daily rebalance: only if we haven't already today
+                last = await self.eco.repo.get_guild_setting(guild.id, "economy:last_rebalance")
+                if last != today:
+                    await self.eco.recompute_reference(guild.id)
+                    await self.eco.repo.set_guild_setting(guild.id, "economy:last_rebalance", today)
             except Exception as e:
-                print(f"[Ignio][Economy] snapshot failed for {guild.id}: {e}")
+                print(f"[Ignio][Economy] snapshot/rebalance failed for {guild.id}: {e}")
 
     @_snapshot_loop.before_loop
     async def _before(self):
@@ -75,6 +82,26 @@ class EconomyCog(commands.Cog):
         e = discord.Embed(title="✅ Rate updated",
                           description=f"**{_fmt(sobs_per_dollar)} sobs = $1** on this server.",
                           color=ACCENT)
+        await ctx.reply(embed=e)
+
+    @commands.command(name="rebalance", aliases=["resync"])
+    @commands.guild_only()
+    async def rebalance_cmd(self, ctx):
+        if not _is_admin(ctx.author, self.settings):
+            await ctx.reply(embed=self._err("Only admins can rebalance the shop."))
+            return
+        old_ref = await self.eco.reference_balance(ctx.guild.id)
+        new_ref = await self.eco.recompute_reference(ctx.guild.id)
+        prices = await self.eco.all_item_prices(ctx.guild.id)
+        e = discord.Embed(title="✅ Shop rebalanced", color=ACCENT)
+        e.description = (f"Reference balance: **{_fmt(old_ref)} → {_fmt(new_ref)}** sobs.\n"
+                         f"Prices are now locked to the current economy.")
+        e.add_field(name="A few new prices", value=(
+            f"Basic Shield — {_fmt(prices['shield'])}\n"
+            f"Tax Audit — {_fmt(prices['tax_audit'])}\n"
+            f"King's Decree — {_fmt(prices['king'])}"
+        ), inline=False)
+        e.set_footer(text="Prices auto-rebalance daily too.")
         await ctx.reply(embed=e)
 
     @commands.command(name="tax")

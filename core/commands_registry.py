@@ -55,6 +55,7 @@ COMMANDS = [
     {"name": "rate set", "cat": "economy", "desc": "Set the exchange rate", "usage": "rate set <sobs>", "admin": True},
     {"name": "tax", "cat": "economy", "desc": "Show/set the shop burn tax", "usage": "tax [percent]", "admin": True},
     {"name": "multiplier", "cat": "economy", "desc": "Show/set the sob multiplier", "usage": "mult [number|auto]", "admin": True},
+    {"name": "rebalance", "cat": "economy", "desc": "Refresh shop prices to the current economy", "usage": "rebalance", "admin": True},
 
     # ---- Admin ----
     {"name": "admin profile", "cat": "admin", "desc": "Toggle image profile cards", "usage": "admin profile on|off", "admin": True},
