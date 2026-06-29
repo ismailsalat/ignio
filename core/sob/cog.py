@@ -223,6 +223,31 @@ class SobCog(commands.Cog):
     async def sob_group(self, ctx: commands.Context, *, target: str | None = None):
         guild, now = ctx.guild, int(time.time())
 
+        # Safety net: if the first word is actually a subcommand (stats, lb, set,
+        # ...), don't treat it as a @user for the profile card. discord.py
+        # normally routes these to the subcommand, but if anything quirky leaves
+        # us here, dispatch to the right subcommand instead of showing !sob.
+        if target:
+            first = target.strip().split()[0].lower()
+            sub = self.sob_group.get_command(first)
+            if sub is not None:
+                rest = target.strip()[len(first):].strip() or None
+                # call the subcommand callback directly with the remaining args
+                if sub.name == "stats":
+                    return await self.sob_stats(ctx, target=rest)
+                if sub.name == "lb":
+                    return await self.sob_lb(ctx)
+                if sub.name == "set":
+                    return await ctx.invoke(self.sob_set)
+                if sub.name == "tips":
+                    return await self.sob_tips(ctx)
+                if sub.name == "backgrounds":
+                    return await self.sob_backgrounds(ctx)
+                if sub.name == "colors":
+                    return await self.sob_colors(ctx)
+                if sub.name == "help":
+                    return await self.sob_help(ctx)
+
         # Resolve an optional @user / name without swallowing subcommands.
         user = ctx.author
         if target:
@@ -384,6 +409,25 @@ class SobCog(commands.Cog):
         except Exception as e:
             print(f"[Ignio][Sob] stats card failed: {e}")
             await ctx.reply(embed=embeds.error_embed("Couldn't build your stats right now."))
+
+    @sob_group.command(name="tips", aliases=["tip"])
+    @commands.guild_only()
+    async def sob_tips(self, ctx: commands.Context, state: str | None = None):
+        """Turn the occasional shield reminder on or off, just for you."""
+        gid, uid = ctx.guild.id, ctx.author.id
+        key = f"shieldtip:off:{uid}"
+        if state is None:
+            off = (await self.sob_repo.get_guild_setting(gid, key)) == "1"
+            await ctx.reply(
+                f"Shield tips are **{'OFF' if off else 'ON'}** for you. "
+                f"Use `{ctx.prefix}sob tips on` or `{ctx.prefix}sob tips off`.")
+            return
+        on = state.lower() in ("on", "yes", "enable", "enabled", "1", "true")
+        await self.sob_repo.set_guild_setting(gid, key, "0" if on else "1")
+        if on:
+            await ctx.reply("✅ Shield tips are back on. I'll only mention them once in a while.")
+        else:
+            await ctx.reply("✅ Shield tips are off for you. Re-enable any time with `!sob tips on`.")
 
     @sob_group.command(name="backgrounds", aliases=["bgs", "wallpapers"])
     @commands.guild_only()

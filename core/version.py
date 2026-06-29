@@ -8,12 +8,21 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Control Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.1.1",
+        "date": "2026-06-29",
+        "title": "Control Update hotfix",
+        "notes": [
+            "Fixed !sob stats showing the profile card instead of the stats picture",
+            "Shield reminder is now quieter: opt-out button + !sob tips on/off, max once every 6h, no ping",
+        ],
+    },
     {
         "version": "1.1.0",
         "date": "2026-06-29",

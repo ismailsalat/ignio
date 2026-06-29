@@ -9,14 +9,14 @@ def norm(n):
 # Every command path that exists in the bot (kept in sync with the cogs).
 REAL = {
     "sob","sob @user","sob lb","sob stats","sob set","sob backgrounds","sob colors",
-    "sob set background","sob set color","ss",
+    "sob set background","sob set color","sob tips","ss",
     "shop","daily","buy","me","use",
     "rate","value","worth","economy","rate set","tax","treasury","treasury give",
     "multiplier","rebalance",
     "roulette","roulettestats",
     "admin profile","admin givesob","admin givetoken","admin reset","admin recount",
     "admin threshold","admin emoji","admin whoami","admin config","admin stats","admin servers",
-    "admin altblock","admin freeze","admin audit","admin audit tx","admin suspicious",
+    "admin altblock","admin tips","admin freeze","admin audit","admin audit tx","admin suspicious",
     "admin export","admin auditexport","admin import","admin weekly",
     "admin shop","admin item","admin category","admin auditcap","admin auditcd",
     "shop additem","shop setstock","shop removeitem","shop setchannel","shop setrole","shop boostmult",
