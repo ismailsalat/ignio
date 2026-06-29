@@ -8,12 +8,29 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Protection Update"
+CODENAME = "Steal Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.3.0",
+        "date": "2026-06-29",
+        "title": "Steal Update (risky PvP gamble)",
+        "notes": [
+            "NEW !steal @user - a high-risk gamble to steal sobs (under Games)",
+            "Low 18% odds, capped at 1.25% per hit and 4% of a target per day",
+            "Win: take a slice of their sobs (90% to you, 10% treasury)",
+            "Lose: pay a caught fee (half treasury, half burned) - target loses nothing",
+            "Hard limits: 4 attempts/day, 15-min cooldown, 60-min per-target, 30-min victim immunity",
+            "NEW Lockpick (+4% odds, one use) and Safe Lock (-5% incoming, 20 min) - risk-priced, expire in 24h",
+            "!steal stats and steal profit/loss now shown in !sob stats",
+            "Admins: !admin steal on/off and !admin steal config",
+            "Balanced by a 7-day sim: steal stays break-even and never beats getting sobbed",
+            "Guard added: can no longer accept everyday emojis (sob, the crying face) that minted sobs by accident",
+        ],
+    },
     {
         "version": "1.2.0",
         "date": "2026-06-29",
