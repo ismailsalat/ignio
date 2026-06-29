@@ -404,6 +404,27 @@ class AdminCog(commands.Cog):
         else:
             await ctx.reply(embed=_embed("✅ Economy resumed", "Sob earning and games are active again."))
 
+    @admin_group.command(name="tips", aliases=["shieldtips"])
+    async def admin_tips(self, ctx: commands.Context, state: str = None):
+        """Turn the occasional shield reminder on/off for the WHOLE server."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            off = (await self.repo.get_guild_setting(gid, "shieldtip:enabled")) == "0"
+            await ctx.reply(embed=_embed(
+                "Shield tips",
+                f"Server-wide shield reminders are **{'OFF' if off else 'ON'}**.\n"
+                f"They're quiet (no ping), only after a real hit, and at most once every 6h per person.\n"
+                f"`{ctx.prefix}admin tips on|off`. (Each member can also use `{ctx.prefix}sob tips off`.)"))
+            return
+        on = state.lower() in ("on", "yes", "enable", "enabled", "1", "true")
+        await self.repo.set_guild_setting(gid, "shieldtip:enabled", "1" if on else "0")
+        await ctx.reply(embed=_embed(
+            "✅ Shield tips " + ("on" if on else "off"),
+            "Members may still get an occasional quiet reminder." if on
+            else "Nobody will be shown shield reminders."))
+
     # ------------------------------------------------------------------
     # Economy / shop controls (disable items, categories, whole shop)
     # ------------------------------------------------------------------
@@ -527,6 +548,41 @@ class AdminCog(commands.Cog):
         await self.repo.set_guild_setting(gid, "economy:audit_cooldown_secs", str(max(0, seconds)))
         msg = "no cooldown" if seconds <= 0 else f"{seconds//60}m {seconds%60}s"
         await ctx.reply(embed=_embed("✅ Audit cooldown set", f"Now **{msg}** between audits."))
+
+    @admin_group.command(name="protection", aliases=["protect", "shieldprice"])
+    async def admin_protection(self, ctx: commands.Context, factor: str = None):
+        """View or override the protection price factor (auto-tuned daily).
+        `!admin protection` shows it; `!admin protection 1.0` sets it; `auto` resets."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        from core.protection import Protection
+        prot = Protection(self.economy, self.repo) if getattr(self, "economy", None) else None
+        if prot is None:
+            # economy may live on a sibling; build from repo + a fresh Economy
+            from core.economy import Economy
+            prot = Protection(Economy(self.repo), self.repo)
+        if factor is None:
+            f = await prot.price_factor(gid)
+            await ctx.reply(embed=_embed("Protection pricing",
+                f"Current price factor: **{f:.2f}×** (1.00 = normal).\n"
+                f"Protection is auto-priced from each player's own risk and can never "
+                f"cost more than the damage it prevents.\n"
+                f"`{ctx.prefix}admin protection <0.5–1.2>` to override · `auto` to reset to 1.0."))
+            return
+        if factor.lower() in ("auto", "reset", "default"):
+            await prot.set_price_factor(gid, 1.0)
+            await ctx.reply(embed=_embed("✅ Protection reset", "Price factor back to **1.00×** (auto-tuning resumes)."))
+            return
+        try:
+            f = float(factor)
+        except ValueError:
+            await ctx.reply(embed=_err("Give a number between 0.5 and 1.2, or `auto`."))
+            return
+        await prot.set_price_factor(gid, f)
+        applied = await prot.price_factor(gid)
+        await ctx.reply(embed=_embed("✅ Protection factor set",
+            f"Protection now priced at **{applied:.2f}×**. (Clamped to 0.5–1.2 for safety.)"))
 
     @admin_group.group(name="audit", invoke_without_command=True)
     async def admin_audit(self, ctx: commands.Context, member: discord.Member = None, page: int = 0):

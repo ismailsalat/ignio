@@ -33,6 +33,7 @@ COMMANDS = [
     {"name": "sob @user", "cat": "sobs", "desc": "Another member's profile card", "usage": "sob @user"},
     {"name": "sob lb", "cat": "sobs", "desc": "Server leaderboard", "usage": "sob lb"},
     {"name": "sob stats", "cat": "sobs", "desc": "Where your sobs come from + your audit allowance (picture)", "usage": "sob stats"},
+    {"name": "sob tips", "cat": "sobs", "desc": "Turn the occasional shield reminder on/off for yourself", "usage": "sob tips on|off"},
     {"name": "ss", "cat": "sobs", "desc": "Reply to a message to wipe its sobs (uses a token)", "usage": "ss"},
 
     # ---- Profile customization ----
@@ -81,7 +82,9 @@ COMMANDS = [
     {"name": "admin category", "cat": "admin", "desc": "Disable/enable a whole shop category", "usage": "admin category disable|enable <name>", "admin": True},
     {"name": "admin auditcap", "cat": "admin", "desc": "Max audits one person can do per day", "usage": "admin auditcap <n>", "admin": True},
     {"name": "admin auditcd", "cat": "admin", "desc": "Cooldown between a person's audits (seconds)", "usage": "admin auditcd <seconds>", "admin": True},
+    {"name": "admin protection", "cat": "admin", "desc": "View/override the protection price factor (auto-tuned)", "usage": "admin protection [0.5-1.2|auto]", "admin": True},
     {"name": "admin altblock", "cat": "admin", "desc": "Block/flag alt-farm reactions", "usage": "admin altblock on|off", "admin": True},
+    {"name": "admin tips", "cat": "admin", "desc": "Shield reminders on/off for the whole server", "usage": "admin tips on|off", "admin": True},
 
     # ---- Admin: audit & investigation ----
     {"name": "admin audit", "cat": "admin", "desc": "Trace where a user's sobs came from + reconciliation", "usage": "admin audit @user [page]", "admin": True},
