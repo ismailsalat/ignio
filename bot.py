@@ -26,6 +26,7 @@ from core.economy import Economy
 from core.economy_cog import EconomyCog
 from core.daily_cog import DailyCog
 from core.games.roulette_cog import RouletteCog
+from core.games.steal_cog import StealCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -102,6 +103,7 @@ async def run() -> None:
             ("DailyCog", DailyCog(bot, settings, sob_repo)),
             ("AboutCog", AboutCog(bot, settings, sob_repo)),
             ("RouletteCog", RouletteCog(bot, settings, sob_repo, games_engine)),
+            ("StealCog", StealCog(bot, settings, sob_repo, economy, shop_repo, protection)),
         ):
             try:
                 await bot.add_cog(cog)

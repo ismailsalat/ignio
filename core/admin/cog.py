@@ -329,6 +329,16 @@ class AdminCog(commands.Cog):
             parts = clean.strip("<>").split(":")
             if len(parts) >= 2:
                 clean = parts[1]
+        # Guard against everyday emojis that cause accidental sob earning.
+        # The plain Unicode 😭 and the bare name "sob" get used in normal chat,
+        # so accepting them mints sobs from casual reactions. Block them.
+        AMBIGUOUS = {"sob", "😭", "😢", "😪", "🥲", "cry", "crying"}
+        if clean.lower() in AMBIGUOUS:
+            await ctx.reply(embed=_err(
+                f"`{clean}` is an everyday emoji people use in normal chat — accepting it would "
+                f"hand out sobs by accident. Use a **custom server emoji** for sobs instead "
+                f"(e.g. `:handsob:`). If you really must, edit `sob_emojis` directly."))
+            return
         current = await self.repo.add_accepted_emoji(ctx.guild.id, clean)
         display = ", ".join(f"`{x}`" for x in sorted(current))
         await ctx.reply(embed=_ok("Emoji added", f"Now accepting: {display}"))
@@ -583,6 +593,48 @@ class AdminCog(commands.Cog):
         applied = await prot.price_factor(gid)
         await ctx.reply(embed=_embed("✅ Protection factor set",
             f"Protection now priced at **{applied:.2f}×**. (Clamped to 0.5–1.2 for safety.)"))
+
+    @admin_group.group(name="steal", invoke_without_command=True)
+    async def admin_steal(self, ctx: commands.Context, state: str = None):
+        """Turn !steal on/off, or `!admin steal config` to see/tune the numbers."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            off = (await self.repo.get_guild_setting(gid, "steal:enabled")) == "0"
+            await ctx.reply(embed=_embed("Steal status",
+                f"!steal is **{'OFF 🔒' if off else 'ON ✅'}**.\n"
+                f"`{ctx.prefix}admin steal on|off` · `{ctx.prefix}admin steal config`"))
+            return
+        on = state.lower() in ("on", "yes", "enable", "enabled", "1", "true")
+        await self.repo.set_guild_setting(gid, "steal:enabled", "1" if on else "0")
+        await ctx.reply(embed=_embed("🦝 Steal " + ("enabled ✅" if on else "disabled 🔒"),
+            "Players can use !steal again." if on else "Nobody can !steal until you re-enable it."))
+
+    @admin_steal.command(name="config")
+    async def admin_steal_config(self, ctx: commands.Context, chance: int = None):
+        """Show steal config, or set the base success chance: `!admin steal config 18`."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        from core import steal as S
+        if chance is None:
+            base = await self.repo.get_guild_setting(gid, "steal:base_chance")
+            base = int(base) if base is not None else S.BASE_CHANCE
+            await ctx.reply(embed=_embed("🦝 Steal config",
+                f"Base chance: **{base}%** (clamped {S.CHANCE_FLOOR}–{S.CHANCE_CEIL}% after items)\n"
+                f"Steal amount: **{S.STEAL_PCT*100:.2f}%** of risk balance (cap {S.STEAL_HARD_CAP:,})\n"
+                f"Success split: hunter {int(S.HUNTER_SHARE*100)}% · treasury {S.TAX_PCT}%\n"
+                f"Fail fee: {int(S.FAIL_FEE_PCT*100)}% of planned (half tax / half burned)\n"
+                f"Attacker: {S.ATTACKER_DAILY_ATTEMPTS}/day · {S.ATTACKER_COOLDOWN//60}m cooldown · "
+                f"{S.PER_TARGET_LOCKOUT//60}m per-target lockout\n"
+                f"Target: max {S.DAILY_VICTIM_PCT*100:.0f}%/day lost · {S.TARGET_IMMUNITY//60}m immunity after a hit\n"
+                f"`{ctx.prefix}admin steal config <chance>` to set base chance."))
+            return
+        c = max(S.CHANCE_FLOOR, min(S.CHANCE_CEIL, chance))
+        await self.repo.set_guild_setting(gid, "steal:base_chance", str(c))
+        await ctx.reply(embed=_embed("✅ Steal chance set",
+            f"Base steal success chance is now **{c}%** (clamped to {S.CHANCE_FLOOR}–{S.CHANCE_CEIL}%)."))
 
     @admin_group.group(name="audit", invoke_without_command=True)
     async def admin_audit(self, ctx: commands.Context, member: discord.Member = None, page: int = 0):

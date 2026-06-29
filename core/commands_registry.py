@@ -83,6 +83,8 @@ COMMANDS = [
     {"name": "admin auditcap", "cat": "admin", "desc": "Max audits one person can do per day", "usage": "admin auditcap <n>", "admin": True},
     {"name": "admin auditcd", "cat": "admin", "desc": "Cooldown between a person's audits (seconds)", "usage": "admin auditcd <seconds>", "admin": True},
     {"name": "admin protection", "cat": "admin", "desc": "View/override the protection price factor (auto-tuned)", "usage": "admin protection [0.5-1.2|auto]", "admin": True},
+    {"name": "admin steal", "cat": "admin", "desc": "Turn !steal on/off for the server", "usage": "admin steal on|off", "admin": True},
+    {"name": "admin steal config", "cat": "admin", "desc": "View/tune steal chance, caps, cooldowns", "usage": "admin steal config [chance]", "admin": True},
     {"name": "admin altblock", "cat": "admin", "desc": "Block/flag alt-farm reactions", "usage": "admin altblock on|off", "admin": True},
     {"name": "admin tips", "cat": "admin", "desc": "Shield reminders on/off for the whole server", "usage": "admin tips on|off", "admin": True},
 
@@ -111,6 +113,8 @@ COMMANDS = [
     # ---- Games ----
     {"name": "roulette", "cat": "games", "desc": "Russian Roulette — wager sobs 50/50", "usage": "roulette @user <amount>"},
     {"name": "roulettestats", "cat": "games", "desc": "See roulette match history & odds", "usage": "rrstats"},
+    {"name": "steal", "cat": "games", "desc": "Risky gamble to steal sobs (18% odds, capped)", "usage": "steal @user [lockpick]"},
+    {"name": "steal stats", "cat": "games", "desc": "Your steal record (profit, attempts, immunity)", "usage": "steal stats"},
 
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},
