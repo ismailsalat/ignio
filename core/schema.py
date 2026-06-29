@@ -343,6 +343,126 @@ CREATE TABLE IF NOT EXISTS user_activity (
 );
 """
 
+
+# ---------------------------------------------------------------------------
+# Migration 210: store the EXACT credited value of each sob reaction.
+#
+# The old code credited a scaled amount (sob_value * multiplier) on a reaction
+# but only ever subtracted 1 on removal/snitch, minting sobs on every toggle.
+# We now store the exact amount (and the multiplier/reference used) per event so
+# removal and snitch refund precisely what was credited, regardless of later
+# multiplier changes. Columns are added to the existing sob_events table.
+# ---------------------------------------------------------------------------
+_SOB_EVENT_AMOUNT = """
+ALTER TABLE sob_events ADD COLUMN credited_amount INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sob_events ADD COLUMN multiplier_ref  TEXT    NOT NULL DEFAULT '';
+"""
+
+
+# ---------------------------------------------------------------------------
+# Migration 211: append-only economy ledger (double-entry where possible).
+#
+# Every sob that is earned, lost, spent, transferred or received writes one or
+# more rows here. Rows are NEVER updated or deleted in normal operation, so a
+# full history of how every balance came to be can be reconstructed and every
+# balance reconciled. transaction_id groups the rows of one logical action so a
+# completed transfer/spend sums to zero (except intentional minting like daily
+# rewards and admin grants).
+# ---------------------------------------------------------------------------
+_ECONOMY_LEDGER = """
+CREATE TABLE IF NOT EXISTS economy_ledger (
+    ledger_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id TEXT    NOT NULL,
+    guild_id       INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL,
+    event_type     TEXT    NOT NULL,
+
+    subject_id     INTEGER NOT NULL DEFAULT 0,   -- whose balance changed
+    actor_id       INTEGER NOT NULL DEFAULT 0,   -- who caused it
+    counterparty_id INTEGER NOT NULL DEFAULT 0,  -- who paid/received/was hit
+
+    delta          INTEGER NOT NULL DEFAULT 0,   -- +/- sobs to subject
+    balance_before INTEGER NOT NULL DEFAULT 0,
+    balance_after  INTEGER NOT NULL DEFAULT 0,
+
+    item_key       TEXT    NOT NULL DEFAULT '',
+    item_name      TEXT    NOT NULL DEFAULT '',
+    quantity       INTEGER NOT NULL DEFAULT 0,
+    price          INTEGER NOT NULL DEFAULT 0,
+
+    message_id     INTEGER NOT NULL DEFAULT 0,
+    game_id        TEXT    NOT NULL DEFAULT '',
+
+    tax_amount     INTEGER NOT NULL DEFAULT 0,
+    treasury_amount INTEGER NOT NULL DEFAULT 0,
+    burned_amount  INTEGER NOT NULL DEFAULT 0,
+    multiplier_ref TEXT    NOT NULL DEFAULT '',
+
+    metadata       TEXT    NOT NULL DEFAULT ''   -- JSON for extra details
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_guild_time  ON economy_ledger(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_subject      ON economy_ledger(guild_id, subject_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_tx           ON economy_ledger(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_event        ON economy_ledger(guild_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_ledger_message      ON economy_ledger(guild_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_game         ON economy_ledger(guild_id, game_id);
+"""
+
+
+# ---------------------------------------------------------------------------
+# Migration 212: security log for blocked / suspicious actions (altblock etc).
+# Append-only. Admins read it to see exactly why a reaction did not count.
+# ---------------------------------------------------------------------------
+_SECURITY_LOG = """
+CREATE TABLE IF NOT EXISTS security_log (
+    log_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    event_type  TEXT    NOT NULL,          -- e.g. 'blocked_reaction'
+    actor_id    INTEGER NOT NULL DEFAULT 0,
+    target_id   INTEGER NOT NULL DEFAULT 0,
+    message_id  INTEGER NOT NULL DEFAULT 0,
+    reason      TEXT    NOT NULL DEFAULT '',
+    metadata    TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_security_guild_time ON security_log(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_security_actor      ON security_log(guild_id, actor_id);
+"""
+
+
+# ---------------------------------------------------------------------------
+# Migration 213: effect charges (Hunter's Blessing, Guardian, Reflect, ...).
+# Tracks remaining charges for charge-based effects so they decrement per use
+# and are removed at 0 instead of lasting forever.
+# ---------------------------------------------------------------------------
+_EFFECT_CHARGES = """
+ALTER TABLE active_effects ADD COLUMN charges_remaining INTEGER NOT NULL DEFAULT 0;
+"""
+
+
+# ---------------------------------------------------------------------------
+# Migration 214: roulette / game escrow. Both wagers are locked here for the
+# duration of a match; refunded on timeout/error/restart, paid out on settle.
+# pending matches survive a restart so escrow is never silently lost.
+# ---------------------------------------------------------------------------
+_GAME_ESCROW = """
+CREATE TABLE IF NOT EXISTS game_matches (
+    game_id        TEXT    PRIMARY KEY,
+    guild_id       INTEGER NOT NULL,
+    game           TEXT    NOT NULL,
+    challenger_id  INTEGER NOT NULL,
+    opponent_id    INTEGER NOT NULL,
+    wager          INTEGER NOT NULL,
+    challenger_escrow INTEGER NOT NULL DEFAULT 0,
+    opponent_escrow   INTEGER NOT NULL DEFAULT 0,
+    status         TEXT    NOT NULL DEFAULT 'pending',  -- pending|settled|refunded
+    created_at     INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_game_matches_status ON game_matches(guild_id, status);
+"""
+
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -354,6 +474,11 @@ MIGRATIONS = [
     (207, "audit_events", _AUDIT_LOG),
     (208, "game_events", _GAME_LOG),
     (209, "user_activity", _USER_ACTIVITY),
+    (210, "sob_event_credited_amount", _SOB_EVENT_AMOUNT),
+    (211, "economy_ledger", _ECONOMY_LEDGER),
+    (212, "security_log", _SECURITY_LOG),
+    (213, "effect_charges", _EFFECT_CHARGES),
+    (214, "game_escrow", _GAME_ESCROW),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the
