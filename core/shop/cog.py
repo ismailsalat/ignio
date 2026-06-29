@@ -169,7 +169,10 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         # shield / ward check
         crit = False
         blocked = False
-        if is_heist:
+        # Vault Ward blocks BOTH basic audits and grand heists outright.
+        if await shop.has_effect(guild_id, target.id, "vault_ward"):
+            blocked = True
+        elif is_heist:
             if await shop.has_effect(guild_id, target.id, "shield"):
                 if random.random() < AUDIT_HEIST_CRIT:
                     crit = True
@@ -595,11 +598,14 @@ class UseButton(discord.ui.Button):
 # ======================================================================
 
 class _ShieldSuggestView(discord.ui.View):
-    """A tiny dismissible nudge shown to an audit victim. Only the victim can
-    dismiss it. Auto-times out quietly after a few minutes."""
-    def __init__(self, victim_id: int):
+    """A tiny, quiet nudge shown to an audit victim now and then. The victim can
+    dismiss it, or turn it off for themselves entirely. Only the victim can use
+    the buttons. Auto-times out quietly after a few minutes."""
+    def __init__(self, victim_id: int, shop_repo=None, guild_id: int = 0):
         super().__init__(timeout=300)
         self.victim_id = victim_id
+        self.shop_repo = shop_repo
+        self.guild_id = guild_id
         self.message = None
 
     async def on_timeout(self):
@@ -609,16 +615,43 @@ class _ShieldSuggestView(discord.ui.View):
         except Exception:
             pass
 
-    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
+    def _is_victim(self, interaction) -> bool:
+        return interaction.user.id == self.victim_id
+
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary)
     async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.victim_id:
+        if not self._is_victim(interaction):
             await interaction.response.send_message(
-                "Only the person being audited can dismiss this.", ephemeral=True)
+                "Only the person being audited can use this.", ephemeral=True)
             return
         try:
             await interaction.message.delete()
         except Exception:
             await interaction.response.edit_message(view=None)
+
+    @discord.ui.button(label="Don't show again", style=discord.ButtonStyle.secondary)
+    async def turn_off(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._is_victim(interaction):
+            await interaction.response.send_message(
+                "Only the person being audited can use this.", ephemeral=True)
+            return
+        # remember this user's choice so they're never nudged again
+        try:
+            if self.shop_repo is not None:
+                await self.shop_repo.sob_repo.set_guild_setting(
+                    self.guild_id, f"shieldtip:off:{self.victim_id}", "1")
+        except Exception:
+            pass
+        try:
+            await interaction.message.delete()
+        except Exception:
+            await interaction.response.edit_message(view=None)
+        try:
+            await interaction.response.send_message(
+                "Got it — I won't show you shield tips again. "
+                "Re-enable any time with `!sob tips on`.", ephemeral=True)
+        except Exception:
+            pass
 
 
 class ShopCog(commands.Cog):
@@ -779,34 +812,52 @@ class ShopCog(commands.Cog):
         await ctx.reply(embed=emb)
 
     async def _maybe_suggest_shield(self, ctx, info: dict):
-        """If a victim has been audited enough today and isn't shielded, send a
-        small dismissible picture nudging them to buy a Shield. They can tap
-        'Dismiss' to remove it. Best-effort: never breaks the audit flow."""
+        """Occasionally show an audit victim a quiet, dismissible shield tip.
+        It is intentionally low-key: no ping, only after a real hit, at most once
+        every few hours per person, and never again once they turn it off.
+        Best-effort: never breaks the audit flow."""
         try:
+            import time as _t
             gid = ctx.guild.id
             vid = info["victim_id"]
-            # don't nag if they're already protected
+            repo = self.shop.sob_repo
+
+            # 1) user turned tips off for themselves -> never show
+            if (await repo.get_guild_setting(gid, f"shieldtip:off:{vid}")) == "1":
+                return
+            # 2) server-wide tips off (admin) -> never show
+            if (await repo.get_guild_setting(gid, "shieldtip:enabled")) == "0":
+                return
+            # 3) don't nag if they're already protected
             if await self.shop.has_effect(gid, vid, "shield") or \
                await self.shop.has_effect(gid, vid, "guardian"):
                 return
-            # only suggest once they've actually been bitten (>= ~8% of balance
-            # lost today, or hit multiple times) to avoid spamming on tiny hits
+            # 4) only after a real hit (>= ~10% of balance lost today)
             lost = int(info.get("lost_today", 0))
             bal_after = int(info.get("victim_balance", 0))
             ref = lost + bal_after
-            if ref <= 0 or (lost / ref) < 0.08:
+            if ref <= 0 or (lost / ref) < 0.10:
                 return
+            # 5) rate-limit: at most once every 6 hours per person, so even a
+            #    string of audits won't spam them
+            now = int(_t.time())
+            last_raw = await repo.get_guild_setting(gid, f"shieldtip:last:{vid}")
+            try:
+                last = int(last_raw)
+            except (TypeError, ValueError):
+                last = 0
+            if now - last < 6 * 3600:
+                return
+            await repo.set_guild_setting(gid, f"shieldtip:last:{vid}", str(now))
 
             from core.profile.small_cards import shield_suggest_card
             import io
             price = (await self.economy.item_price(gid, "shield")) if self.economy else None
             img = shield_suggest_card(lost_today=lost, shield_price=price)
             buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
-            victim = ctx.guild.get_member(vid)
-            mention = victim.mention if victim else f"<@{vid}>"
-            view = _ShieldSuggestView(vid)
+            view = _ShieldSuggestView(vid, shop_repo=self.shop, guild_id=gid)
+            # no @mention ping — keep it quiet so it never bothers anyone
             msg = await ctx.channel.send(
-                content=f"{mention} you're getting audited — protect your sobs:",
                 file=discord.File(buf, filename="shield_tip.png"),
                 view=view)
             view.message = msg

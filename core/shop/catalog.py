@@ -39,7 +39,12 @@ BUILTIN_ITEMS: dict[str, dict] = {
     "audit_ward": {
         "key": "audit_ward", "name": "Audit Ward", "icon": "🧾", "category": "protection",
         "price": 1500, "duration": 1800, "effect_key": "audit_ward", "mechanic": "block_audit",
-        "description": "Blocks Basic Audits against you for 30 minutes.",
+        "description": "Blocks Basic Audits against you for 30 minutes. Priced from YOUR audit risk.",
+    },
+    "vault_ward": {
+        "key": "vault_ward", "name": "Vault Ward", "icon": "🏦", "category": "protection",
+        "price": 3000, "duration": 1800, "effect_key": "vault_ward", "mechanic": "block_audit_all",
+        "description": "Blocks Basic Audits AND Grand Heists for 30 minutes. Best for high balances.",
     },
     "reflect": {
         "key": "reflect", "name": "Reflect Shield", "icon": "🪞", "category": "protection",
@@ -123,7 +128,7 @@ BUILTIN_ITEMS: dict[str, dict] = {
 TARGETED_EFFECTS = {"freeze", "freeze_deep", "audit", "heist", "slow_curse", "marked", "jail"}
 
 # Effects that are self-applied (used with !use <item>).
-SELF_EFFECTS = {"shield", "guardian", "audit_ward", "reflect",
+SELF_EFFECTS = {"shield", "guardian", "audit_ward", "vault_ward", "reflect",
                 "boost", "boost_adv", "hunter", "lucky", "king"}
 
 # Mechanics whose advertised effect is actually enforced in code. Any built-in
@@ -135,6 +140,7 @@ ENFORCED_MECHANICS = {
     "block_snitch",       # shield (time-based)
     "block_charges",      # guardian (charge-based)
     "block_audit",        # audit_ward
+    "block_audit_all",    # vault_ward (basic + heist)
     "reflect_next",       # reflect
     "block_tokens",       # freeze / deep freeze
     "audit_basic",        # basic audit

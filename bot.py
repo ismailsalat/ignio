@@ -68,6 +68,12 @@ async def run() -> None:
     from core.games.engine import GamesEngine
     games_engine = GamesEngine(sob_repo, economy)
     shop_repo = ShopRepo(db_manager, sob_repo, economy)
+    # Risk-based protection pricing (prices shields/wards from each buyer's own
+    # exposure, never above the damage prevented).
+    from core.protection import Protection
+    protection = Protection(economy, sob_repo)
+    shop_repo.protection = protection
+    economy.protection = protection
     profile_service = ProfileService(bot, settings, sob_repo)
     gate = Gating(sob_repo)
 

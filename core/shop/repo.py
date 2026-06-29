@@ -18,6 +18,26 @@ class ShopRepo:
         self.db_manager = db_manager
         self.sob_repo = sob_repo
         self.economy = economy
+        # Risk-based protection pricing. Set by the bot after construction so
+        # protection items are priced from the BUYER'S personal risk, not the
+        # whole-server reference. Optional: falls back to economy tiers if None.
+        self.protection = None
+
+    PROTECTION_KEYS = ("shield", "guardian", "reflect", "audit_ward", "vault_ward")
+
+    async def personal_price(self, guild_id: int, user_id: int, item: dict) -> int:
+        """The price THIS user pays for an item: risk-based for protection,
+        otherwise the catalog's economy-scaled price. Per-unit (qty handled by
+        the caller)."""
+        key = item["key"]
+        if self.protection is not None and key in self.PROTECTION_KEYS:
+            try:
+                p = await self.protection.price_for(guild_id, user_id, key)
+                if p is not None:
+                    return int(p)
+            except Exception:
+                pass
+        return int(item["price"])
 
     async def _db(self):
         return await self.db_manager.get()
@@ -26,11 +46,12 @@ class ShopRepo:
     # catalog (built-in merged with per-guild custom/overrides)
     # ------------------------------------------------------------------
 
-    async def get_catalog(self, guild_id: int, economy=None) -> list[dict[str, Any]]:
+    async def get_catalog(self, guild_id: int, economy=None, user_id: int | None = None) -> list[dict[str, Any]]:
         """Built-in items plus any enabled custom guild items. Built-in prices
         auto-scale to the server economy unless an admin override row exists.
         Uses self.economy by default so the displayed price always matches what
-        buy() actually charges."""
+        buy() actually charges. When user_id is given, protection items show
+        that buyer's personal risk-based price."""
         if economy is None:
             economy = self.economy
         db = await self._db()
@@ -87,6 +108,16 @@ class ShopRepo:
             # admin disable: whole shop, this category, or this specific item
             if shop_off or key in disabled_items or str(item.get("category", "")).lower() in disabled_cats:
                 item["enabled"] = False
+            # personal risk-based price for protection items (shield = 30-min quote)
+            if user_id is not None and self.protection is not None and key in self.PROTECTION_KEYS:
+                try:
+                    pp = await self.protection.price_for(guild_id, user_id, key)
+                    if pp is not None:
+                        item["price"] = int(pp)
+                        if key == "shield":
+                            item["_per_30min"] = int(pp)  # shield shown per 30 min
+                except Exception:
+                    pass
             # tax-included total (built-in PvP items are taxed on top)
             item["_final_price"] = item["price"] + int(item["price"] * tax_pct / 100)
             catalog.append(item)
@@ -151,8 +182,21 @@ class ShopRepo:
     # inventory
     # ------------------------------------------------------------------
 
+    # Protection items can't be stockpiled while poor and used later when rich:
+    # they expire from inventory if not used within this window.
+    PROTECTION_INV_TTL = 86400  # 24h
+
+    async def _prune_expired(self, db, guild_id: int, user_id: int, ts: int) -> None:
+        """Drop protection inventory that has passed its 24h expiry."""
+        await db.execute(
+            "DELETE FROM shop_inventory WHERE guild_id=? AND user_id=? "
+            "AND expires_at > 0 AND expires_at <= ?",
+            (guild_id, user_id, ts),
+        )
+
     async def get_inventory(self, guild_id: int, user_id: int) -> dict[str, int]:
         db = await self._db()
+        await self._prune_expired(db, guild_id, user_id, now_ts())
         rows = await db.fetchall(
             "SELECT item_key, quantity FROM shop_inventory WHERE guild_id = ? AND user_id = ? AND quantity > 0",
             (guild_id, user_id),
@@ -160,14 +204,19 @@ class ShopRepo:
         return {str(r["item_key"]): int(r["quantity"]) for r in rows}
 
     async def _add_to_inventory(self, db, guild_id: int, user_id: int, item_key: str, qty: int, ts: int) -> None:
+        # Protection items get a 24h expiry; everything else never expires (0).
+        from core.shop.catalog import BUILTIN_ITEMS
+        is_protection = (BUILTIN_ITEMS.get(item_key, {}).get("category") == "protection")
+        expires = (ts + self.PROTECTION_INV_TTL) if is_protection else 0
         await db.execute(
             """
-            INSERT INTO shop_inventory (guild_id, user_id, item_key, quantity, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO shop_inventory (guild_id, user_id, item_key, quantity, updated_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id, item_key) DO UPDATE SET
-                quantity = quantity + excluded.quantity, updated_at = excluded.updated_at
+                quantity = quantity + excluded.quantity, updated_at = excluded.updated_at,
+                expires_at = CASE WHEN excluded.expires_at > 0 THEN excluded.expires_at ELSE shop_inventory.expires_at END
             """,
-            (guild_id, user_id, item_key, qty, ts),
+            (guild_id, user_id, item_key, qty, ts, expires),
         )
 
     async def _take_from_inventory(self, db, guild_id: int, user_id: int, item_key: str, qty: int, ts: int) -> bool:
@@ -205,12 +254,30 @@ class ShopRepo:
         if not item["enabled"]:
             return False, "disabled", item
 
-        cost = int(item["price"]) * qty
+        # Per-unit price THIS buyer pays. Protection is risk-priced from the
+        # buyer's own exposure. The shield is sold per-second, so we price the
+        # whole purchase as a fraction of the 30-min risk price (computing the
+        # block total avoids per-second rounding inflating the cost).
+        if item["key"] == "shield" and self.protection is not None:
+            try:
+                from core.protection import SHIELD_WINDOW_SECONDS
+                price30 = await self.protection.price_for(guild_id, user_id, "shield")
+                if price30 is None:
+                    raise ValueError
+                cost = max(1, int(round(price30 * qty / SHIELD_WINDOW_SECONDS)))
+            except Exception:
+                cost = max(1, int(item["price"]) * qty)
+        else:
+            unit_price = await self.personal_price(guild_id, user_id, item)
+            cost = unit_price * qty
 
-        # Tax is added ON TOP for built-in PvP items (server items are untaxed).
+        # Tax is added ON TOP for built-in PvP/offensive items only. Protection
+        # items (shields, wards) are defensive and NOT taxed — their risk-based
+        # price is the final price, so it always stays below the damage prevented.
         tax_amount = 0
         is_builtin = item["key"] in BUILTIN_ITEMS
-        if self.economy is not None and is_builtin:
+        is_protection = item.get("category") == "protection" or item["key"] in self.PROTECTION_KEYS
+        if self.economy is not None and is_builtin and not is_protection:
             try:
                 tax_pct = await self.economy.get_tax_pct(guild_id)
                 tax_amount = int(cost * tax_pct / 100)
