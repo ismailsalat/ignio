@@ -141,6 +141,17 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         if eco is None:
             return False, embeds.error_embed("Audits aren't available right now.")
 
+        # Per-auditor limits: a daily cap on how many audits ONE person can do,
+        # and a cooldown between audits. Checked BEFORE anything is consumed, so
+        # a blocked audit costs the attacker nothing. (Players asked for the cap
+        # to be on the attacker, not the victim.)
+        allowed, why, info = await eco.can_audit(guild_id, user.id)
+        if not allowed:
+            if why == "daily_cap":
+                return ("audit_capped", info)
+            if why == "cooldown":
+                return ("audit_cooldown", info)
+
         import random
         from core.economy import AUDIT_BASIC_PCT, AUDIT_HEIST_PCT, AUDIT_HEIST_CRIT
 
@@ -203,9 +214,19 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         await shop.log_effect(guild_id, ledger.EVT_INV_CONSUME, user.id, item_key=key)
 
         extra = " 💥 **CRIT — smashed their shield!**" if crit else ""
-        return True, embeds.used_embed(
+        success_embed = embeds.used_embed(
             f"{builtin['icon']} {builtin['name']}",
             f"{user.mention} audited {target.mention} and seized **{moved:,} sobs**!{extra}")
+        # how much has the victim lost to audits today? used to decide whether to
+        # nudge them to shield up.
+        lost_today = await eco.audit_loss_today(guild_id, target.id)
+        return ("audit_done", {
+            "embed": success_embed,
+            "victim_id": target.id,
+            "stolen": moved,
+            "lost_today": lost_today,
+            "victim_balance": max(0, tgt_bal - moved),
+        })
 
     # ---- targeted, duration-based debuffs (freeze, slow, marked, jail) ----
     if is_targeted:
@@ -562,12 +583,43 @@ class UseButton(discord.ui.Button):
             )
             return
         result, emb = await do_use(self.cog.shop, interaction.guild.id, interaction.user, self.item_key)
+        if result in ("claim", "audit_capped", "audit_cooldown") or not hasattr(emb, "to_dict"):
+            await interaction.response.send_message(
+                "Use this item with the `!use` command.", ephemeral=True)
+            return
         await interaction.response.send_message(embed=emb, ephemeral=True)
 
 
 # ======================================================================
 # cog
 # ======================================================================
+
+class _ShieldSuggestView(discord.ui.View):
+    """A tiny dismissible nudge shown to an audit victim. Only the victim can
+    dismiss it. Auto-times out quietly after a few minutes."""
+    def __init__(self, victim_id: int):
+        super().__init__(timeout=300)
+        self.victim_id = victim_id
+        self.message = None
+
+    async def on_timeout(self):
+        try:
+            if self.message:
+                await self.message.edit(view=None)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.victim_id:
+            await interaction.response.send_message(
+                "Only the person being audited can dismiss this.", ephemeral=True)
+            return
+        try:
+            await interaction.message.delete()
+        except Exception:
+            await interaction.response.edit_message(view=None)
+
 
 class ShopCog(commands.Cog):
     def __init__(self, bot: commands.Bot, settings, shop_repo, sob_repo, economy=None):
@@ -696,7 +748,70 @@ class ShopCog(commands.Cog):
             await self._handle_claim(ctx, emb)  # emb is actually the item dict here
             return
 
+        # per-auditor limit hits -> friendly picture card (emb is the info dict)
+        if result in ("audit_capped", "audit_cooldown"):
+            try:
+                from core.profile.small_cards import audit_limit_card
+                import io
+                img = audit_limit_card(result, emb)
+                buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+                await ctx.reply(file=discord.File(buf, filename="audit_limit.png"))
+                return
+            except Exception as e:
+                print(f"[Ignio][Use] audit limit card failed: {e}")
+                info = emb or {}
+                if result == "audit_capped":
+                    await ctx.reply(embed=embeds.error_embed(
+                        f"You've hit today's audit limit ({info.get('cap',0)} per day). Try again tomorrow."))
+                else:
+                    mins = max(1, int(info.get('cooldown_left', 0)) // 60)
+                    await ctx.reply(embed=embeds.error_embed(
+                        f"Audit is on cooldown — try again in ~{mins} min."))
+            return
+
+        # successful audit -> show result, then quietly nudge the victim to shield
+        if result == "audit_done":
+            info = emb
+            await ctx.reply(embed=info["embed"])
+            await self._maybe_suggest_shield(ctx, info)
+            return
+
         await ctx.reply(embed=emb)
+
+    async def _maybe_suggest_shield(self, ctx, info: dict):
+        """If a victim has been audited enough today and isn't shielded, send a
+        small dismissible picture nudging them to buy a Shield. They can tap
+        'Dismiss' to remove it. Best-effort: never breaks the audit flow."""
+        try:
+            gid = ctx.guild.id
+            vid = info["victim_id"]
+            # don't nag if they're already protected
+            if await self.shop.has_effect(gid, vid, "shield") or \
+               await self.shop.has_effect(gid, vid, "guardian"):
+                return
+            # only suggest once they've actually been bitten (>= ~8% of balance
+            # lost today, or hit multiple times) to avoid spamming on tiny hits
+            lost = int(info.get("lost_today", 0))
+            bal_after = int(info.get("victim_balance", 0))
+            ref = lost + bal_after
+            if ref <= 0 or (lost / ref) < 0.08:
+                return
+
+            from core.profile.small_cards import shield_suggest_card
+            import io
+            price = (await self.economy.item_price(gid, "shield")) if self.economy else None
+            img = shield_suggest_card(lost_today=lost, shield_price=price)
+            buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+            victim = ctx.guild.get_member(vid)
+            mention = victim.mention if victim else f"<@{vid}>"
+            view = _ShieldSuggestView(vid)
+            msg = await ctx.channel.send(
+                content=f"{mention} you're getting audited — protect your sobs:",
+                file=discord.File(buf, filename="shield_tip.png"),
+                view=view)
+            view.message = msg
+        except Exception as e:
+            print(f"[Ignio][Use] shield suggestion skipped: {e}")
 
     async def _handle_claim(self, ctx, item: dict):
         import datetime

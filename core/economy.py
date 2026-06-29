@@ -45,6 +45,13 @@ AUDIT_HEIST_PCT = 0.08     # grand heist steals 8%
 AUDIT_HEIST_CRIT = 0.20    # 20% chance heist pierces & breaks a shield
 AUDIT_DAILY_IMMUNE_PCT = 0.15  # once you've lost 15% of balance to audits today, immune
 
+# Per-AUDITOR limits (the thing players asked for: cap the attacker, not just
+# the victim). Both are admin-configurable per guild via guild_settings:
+#   economy:audit_daily_cap      -> max audits one person may perform per day
+#   economy:audit_cooldown_secs  -> minimum seconds between a person's audits
+AUDIT_DAILY_CAP_DEFAULT = 8       # audits per auditor per day
+AUDIT_COOLDOWN_DEFAULT = 1800     # 30 minutes between audits
+
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -169,6 +176,58 @@ class Economy:
             (guild_id, target_id, auditor_id, int(amount), _today(), int(time.time())),
         )
         await db.commit()
+
+    # ----- per-auditor limits (cap the attacker, not just the victim) -----
+    async def _setting_int(self, guild_id: int, key: str, default: int) -> int:
+        raw = await self.repo.get_guild_setting(guild_id, key)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
+    async def audit_daily_cap(self, guild_id: int) -> int:
+        return await self._setting_int(guild_id, "economy:audit_daily_cap", AUDIT_DAILY_CAP_DEFAULT)
+
+    async def audit_cooldown_secs(self, guild_id: int) -> int:
+        return await self._setting_int(guild_id, "economy:audit_cooldown_secs", AUDIT_COOLDOWN_DEFAULT)
+
+    async def audits_done_today(self, guild_id: int, auditor_id: int) -> int:
+        """How many audits this person has PERFORMED today (UTC)."""
+        db = await self._db()
+        row = await db.fetchone(
+            "SELECT COUNT(*) AS n FROM audit_events WHERE guild_id=? AND auditor_id=? AND day=?",
+            (guild_id, auditor_id, _today()),
+        )
+        return int(row["n"])
+
+    async def audit_cooldown_left(self, guild_id: int, auditor_id: int) -> int:
+        """Seconds left before this auditor may audit again (0 = ready)."""
+        db = await self._db()
+        row = await db.fetchone(
+            "SELECT MAX(created_at) AS last FROM audit_events WHERE guild_id=? AND auditor_id=?",
+            (guild_id, auditor_id),
+        )
+        last = int(row["last"]) if row and row["last"] is not None else 0
+        if last == 0:
+            return 0
+        cd = await self.audit_cooldown_secs(guild_id)
+        left = (last + cd) - int(time.time())
+        return max(0, left)
+
+    async def can_audit(self, guild_id: int, auditor_id: int) -> tuple[bool, str, dict]:
+        """Gate an auditor: returns (allowed, reason, info).
+        reason in: ok, daily_cap, cooldown. info carries numbers for the UX card."""
+        cap = await self.audit_daily_cap(guild_id)
+        done = await self.audits_done_today(guild_id, auditor_id)
+        info = {"cap": cap, "done": done, "remaining": max(0, cap - done)}
+        if cap > 0 and done >= cap:
+            return False, "daily_cap", info
+        cd_left = await self.audit_cooldown_left(guild_id, auditor_id)
+        info["cooldown_left"] = cd_left
+        info["cooldown_total"] = await self.audit_cooldown_secs(guild_id)
+        if cd_left > 0:
+            return False, "cooldown", info
+        return True, "ok", info
 
     async def is_frozen(self, guild_id: int) -> bool:
         """Emergency economy freeze (admin sets via !admin freeze on)."""
