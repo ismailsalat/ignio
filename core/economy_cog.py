@@ -97,8 +97,8 @@ class EconomyCog(commands.Cog):
         e.description = (f"Reference balance: **{_fmt(old_ref)} → {_fmt(new_ref)}** sobs.\n"
                          f"Prices are now locked to the current economy.")
         e.add_field(name="A few new prices", value=(
-            f"Basic Shield — {_fmt(prices['shield'])}\n"
-            f"Tax Audit — {_fmt(prices['tax_audit'])}\n"
+            f"Shield — {_fmt(prices['shield'])}/sec\n"
+            f"Basic Audit — {_fmt(prices['audit'])}\n"
             f"King's Decree — {_fmt(prices['king'])}"
         ), inline=False)
         e.set_footer(text="Prices auto-rebalance daily too.")

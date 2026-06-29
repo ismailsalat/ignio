@@ -35,6 +35,44 @@ def _is_admin(ctx: commands.Context, settings) -> bool:
 # shared action helpers (used by both text commands and buttons)
 # ======================================================================
 
+def _grouped_from_catalog(catalog, only_category=None):
+    """Turn the catalog into {category: [ {key,name,price,stackable} ]} for the
+    picture renderer."""
+    from core.shop.catalog import BUILTIN_ITEMS
+    order = [only_category] if only_category else ["protection", "debuff", "buff", "server"]
+    grouped = {}
+    for cat in order:
+        items = []
+        for c in catalog:
+            if c["category"] == cat and c["enabled"]:
+                base = BUILTIN_ITEMS.get(c["key"], {})
+                items.append({
+                    "key": c["key"],
+                    "name": c["name"],
+                    "price": c.get("_final_price", c["price"]),
+                    "stackable": bool(base.get("stackable")),
+                })
+        if items:
+            grouped[cat] = items
+    return grouped
+
+
+def _shop_picture(balance, catalog, only_category=None):
+    """Render the shop as a Discord file, or None if it fails (embed fallback)."""
+    try:
+        from core.profile.shop_render import make_shop_card
+        import io
+        grouped = _grouped_from_catalog(catalog, only_category)
+        if not grouped:
+            return None
+        img = make_shop_card(balance, grouped, only_category=only_category)
+        buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+        return discord.File(buf, filename="shop.png")
+    except Exception as e:
+        print(f"[Ignio][Shop] picture render failed, using embed: {e}")
+        return None
+
+
 async def do_buy(shop, sob_repo, guild_id, user_id, item_key, qty=1):
     return await shop.buy(guild_id, user_id, item_key.lower(), qty)
 
@@ -237,11 +275,15 @@ class CategoryButton(discord.ui.Button):
         view = self.view
         items = [c for c in view.catalog if c["category"] == self.cat_key and c["enabled"]]
         cat_view = CategoryView(view.cog, view.ctx, view.catalog, self.cat_key, items)
-        icon, label = CATEGORIES[self.cat_key]
-        await interaction.response.edit_message(
-            embed=embeds.category_embed(self.cat_key, items),
-            view=cat_view,
-        )
+        stats = await view.cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        bal = stats["sobs_alltime"]
+        pic = _shop_picture(bal, view.catalog, only_category=self.cat_key)
+        if pic is not None:
+            await interaction.response.edit_message(
+                attachments=[pic], embed=None, view=cat_view)
+        else:
+            await interaction.response.edit_message(
+                embed=embeds.category_embed(self.cat_key, items), attachments=[], view=cat_view)
 
 
 class CategoryView(discord.ui.View):
@@ -270,11 +312,69 @@ class BackButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         stats = await view.cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        bal = stats["sobs_alltime"]
         top = ShopView(view.cog, view.ctx, view.catalog)
-        await interaction.response.edit_message(
-            embed=embeds.shop_embed(interaction.guild.name, view.catalog, stats["sobs_alltime"]),
-            view=top,
+        pic = _shop_picture(bal, view.catalog)
+        if pic is not None:
+            await interaction.response.edit_message(attachments=[pic], embed=None, view=top)
+        else:
+            await interaction.response.edit_message(
+                embed=embeds.shop_embed(interaction.guild.name, view.catalog, bal),
+                attachments=[], view=top)
+
+
+def _bulk_presets(item):
+    """Time presets for a duration/stackable item -> list of (label, qty).
+    For a per-second shield, qty = seconds. For fixed-duration items, qty = count."""
+    from core.shop.catalog import BUILTIN_ITEMS
+    base = BUILTIN_ITEMS.get(item.get("key"), {})
+    if base.get("stackable"):
+        # per-second item: presets are seconds
+        return [("1 min", 60), ("5 min", 300), ("15 min", 900), ("30 min", 1800)]
+    dur = base.get("duration", 0)
+    if dur and dur > 0:
+        # fixed-duration item: presets are multiples (stack several uses)
+        return [("×1", 1), ("×3", 3), ("×5", 5), ("×10", 10)]
+    return None
+
+
+class _BulkBuyButton(discord.ui.Button):
+    def __init__(self, label, qty, item_key, unit_price):
+        cost = qty * unit_price
+        super().__init__(label=f"{label} ({cost:,})", style=discord.ButtonStyle.success)
+        self.qty = qty
+        self.item_key = item_key
+
+    async def callback(self, interaction):
+        cog = self.view.cog
+        ok, reason, item = await do_buy(cog.shop, cog.sob_repo, interaction.guild.id,
+                                        interaction.user.id, self.item_key, self.qty)
+        if not ok:
+            msgs = {"no_item": "That item doesn't exist.", "disabled": "That item is disabled.",
+                    "out_of_stock": "Out of stock.", "not_enough_sobs": "Not enough sobs."}
+            if reason == "not_enough_sobs" and item is not None:
+                final = item.get("_final_price", item["price"]) * self.qty
+                bal = (await cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id))["sobs_alltime"]
+                await interaction.response.send_message(
+                    embed=embeds.error_embed(f"You need **{final:,}** sobs but have **{bal:,}**."), ephemeral=True)
+                return
+            await interaction.response.send_message(
+                embed=embeds.error_embed(msgs.get(reason, "Couldn't buy that.")), ephemeral=True)
+            return
+        stats = await cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(
+            embed=embeds.buy_success_embed(interaction.user, item, self.qty, stats["sobs_alltime"]),
+            ephemeral=True,
         )
+
+
+class BulkBuyView(discord.ui.View):
+    def __init__(self, cog, item, presets):
+        super().__init__(timeout=60)
+        self.cog = cog
+        unit = item.get("_final_price", item["price"])
+        for label, qty in presets:
+            self.add_item(_BulkBuyButton(label, qty, item["key"], unit))
 
 
 class BuyButton(discord.ui.Button):
@@ -285,9 +385,25 @@ class BuyButton(discord.ui.Button):
             style=discord.ButtonStyle.success,
         )
         self.item_key = item["key"]
+        self.item = item
 
     async def callback(self, interaction: discord.Interaction):
         cog = self.view.cog
+        presets = _bulk_presets(self.item)
+        # duration/stackable item -> show bulk time presets instead of buying 1
+        if presets:
+            from core.shop.catalog import BUILTIN_ITEMS
+            base = BUILTIN_ITEMS.get(self.item_key, {})
+            kind = "seconds of protection" if base.get("stackable") else "uses"
+            e = discord.Embed(
+                title=f"{self.item['icon']} {self.item['name']}",
+                description=f"How much do you want? Pick an amount below.\nUnit price: `{self.item.get('_final_price', self.item['price'])}` sobs.",
+                color=embeds.ACCENT,
+            )
+            await interaction.response.send_message(
+                embed=e, view=BulkBuyView(cog, self.item, presets), ephemeral=True)
+            return
+        # normal one-shot item
         ok, reason, item = await do_buy(cog.shop, cog.sob_repo, interaction.guild.id, interaction.user.id, self.item_key)
         if not ok:
             msgs = {
@@ -388,8 +504,13 @@ class ShopCog(commands.Cog):
     async def shop_group(self, ctx: commands.Context):
         catalog = await self.shop.get_catalog(ctx.guild.id)
         stats = await self.sob_repo.get_user_stats(ctx.guild.id, ctx.author.id)
+        bal = stats["sobs_alltime"]
         view = ShopView(self, ctx, catalog)
-        await ctx.reply(embed=embeds.shop_embed(ctx.guild.name, catalog, stats["sobs_alltime"]), view=view)
+        pic = _shop_picture(bal, catalog)
+        if pic is not None:
+            await ctx.reply(file=pic, view=view)
+        else:
+            await ctx.reply(embed=embeds.shop_embed(ctx.guild.name, catalog, bal), view=view)
 
     # ---- buy (text, forgiving) ----
 

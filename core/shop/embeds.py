@@ -24,36 +24,34 @@ def _fmt_left(expires_at: int) -> str:
 
 
 def shop_embed(guild_name: str, catalog: list[dict], balance: int) -> discord.Embed:
+    from core.shop.catalog import BUILTIN_ITEMS
     e = discord.Embed(title="🛒 Sob Shop", color=ACCENT)
-    e.description = f"Your balance: **{balance}** sobs\nBuy with `!shop buy <item>` · use with `!use <item>`"
+    e.description = f"**{balance:,}** sobs to spend\nTap a category below, or `!buy <item> [amount]`"
 
-    # group by category, in CATEGORIES order
     for cat_key, (cat_icon, cat_label) in CATEGORIES.items():
         items = [it for it in catalog if it["category"] == cat_key and it["enabled"]]
         if not items:
             if cat_key == "server":
-                e.add_field(
-                    name=f"{cat_icon} {cat_label}",
-                    value="*Server owners can add rewards here.*",
-                    inline=False,
-                )
+                e.add_field(name=f"{cat_icon} {cat_label}",
+                            value="*Admins can add rewards here.*", inline=False)
             continue
         lines = []
         for it in items:
-            stock = it.get("stock", -1)
-            stock_txt = "" if stock is None or stock < 0 else f" · stock {stock}"
-            final = it.get("_final_price")
-            if final and final != it["price"]:
-                price_txt = f"`{it['price']}` +tax = `{final}` sobs"
+            base = BUILTIN_ITEMS.get(it.get("key"), {})
+            final = it.get("_final_price", it["price"])
+            # price label — note per-second/per-unit clearly
+            if base.get("stackable"):
+                price_txt = f"`{final}`/sec"
+            elif final != it["price"]:
+                price_txt = f"`{final}` sobs"
             else:
                 price_txt = f"`{it['price']}` sobs"
-            lines.append(
-                f"{it['icon']} **{it['name']}** — {price_txt}{stock_txt}\n"
-                f"⤷ {it['description']}"
-            )
+            stock = it.get("stock", -1)
+            stock_txt = "" if stock is None or stock < 0 else f" · {stock} left"
+            lines.append(f"{it['icon']} **{it['name']}** — {price_txt}{stock_txt}\n⤷ *{it['description']}*")
         e.add_field(name=f"{cat_icon} {cat_label}", value="\n".join(lines), inline=False)
 
-    e.set_footer(text="Spending sobs lowers your leaderboard score — choose wisely.")
+    e.set_footer(text="Duration items can be bought in bulk · spending lowers your rank")
     return e
 
 
