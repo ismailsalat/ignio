@@ -348,6 +348,294 @@ class AdminCog(commands.Cog):
     # transfer
     # ======================================================================
 
+    @admin_group.command(name="altblock")
+    async def admin_altblock(self, ctx: commands.Context, state: str = None):
+        """Toggle whether suspicious (alt-like) reactions are blocked from giving sobs."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            cur = await self.repo.get_guild_setting(gid, "economy:altblock")
+            on = cur == "1"
+            await ctx.reply(embed=_embed(
+                "Alt-block status",
+                f"Suspicious reactions are currently **{'BLOCKED 🚫' if on else 'flagged only 🚩'}**.\n\n"
+                f"`{ctx.prefix}admin altblock on` — don't give sobs for alt-like reactions\n"
+                f"`{ctx.prefix}admin altblock off` — count them, just flag in `{ctx.prefix}admin audit`"))
+            return
+        on = state.lower() in ("on", "yes", "true", "1", "block")
+        await self.repo.set_guild_setting(gid, "economy:altblock", "1" if on else "0")
+        if on:
+            await ctx.reply(embed=_embed(
+                "🚫 Alt-block ON",
+                "Reactions from new/inactive accounts (≤7d old, joined ≤24h, or no recent messages) "
+                "no longer give sobs. Real members are unaffected."))
+        else:
+            await ctx.reply(embed=_embed(
+                "🚩 Alt-block OFF",
+                "Suspicious reactions count again, but are still flagged in `audit`."))
+
+    @admin_group.command(name="freeze", aliases=["lockdown"])
+    async def admin_freeze(self, ctx: commands.Context, state: str = None):
+        """Emergency: freeze all sob earning/economy server-wide (exploit response)."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            cur = await self.repo.get_guild_setting(gid, "economy:frozen")
+            is_frozen = cur == "1"
+            await ctx.reply(embed=_embed(
+                "Economy status",
+                f"The economy is currently **{'FROZEN ❄️' if is_frozen else 'active ✅'}**.\n"
+                f"Use `{ctx.prefix}admin freeze on` or `{ctx.prefix}admin freeze off`."))
+            return
+        on = state.lower() in ("on", "yes", "true", "1", "freeze")
+        await self.repo.set_guild_setting(gid, "economy:frozen", "1" if on else "0")
+        if on:
+            await ctx.reply(embed=_embed(
+                "❄️ Economy FROZEN",
+                "All sob earning, snitching, audits, and games are paused server-wide.\n"
+                f"Investigate with `{ctx.prefix}admin audit @user`, then `{ctx.prefix}admin freeze off` to resume."))
+        else:
+            await ctx.reply(embed=_embed("✅ Economy resumed", "Sob earning and games are active again."))
+
+    @admin_group.command(name="audit")
+    async def admin_audit(self, ctx: commands.Context, member: discord.Member = None):
+        """Trace where a user's sobs came from — to spot exploits."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        if member is None:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin audit @user`."))
+            return
+        gid = ctx.guild.id
+        uid = member.id
+        db = await self.db_manager.get()
+
+        stats = await self.repo.get_user_stats(gid, uid)
+        balance = int(stats["sobs_alltime"])
+
+        # 1. reactions RECEIVED (the main faucet) — count + who gave them
+        recv = await db.fetchone(
+            "SELECT COUNT(*) AS n FROM sob_events WHERE guild_id=? AND target_id=?", (gid, uid))
+        recv_n = int(recv["n"]) if recv else 0
+        # top reactors who gave THIS user sobs (alt/farm detector)
+        top_givers = await db.fetchall(
+            "SELECT reactor_id, COUNT(*) AS n FROM sob_events WHERE guild_id=? AND target_id=? "
+            "GROUP BY reactor_id ORDER BY n DESC LIMIT 5", (gid, uid))
+        # reactions in the last 24h (burst detector)
+        import time as _t
+        day_ago = int(_t.time()) - 86400
+        recent = await db.fetchone(
+            "SELECT COUNT(*) AS n FROM sob_events WHERE guild_id=? AND target_id=? AND created_at>=?",
+            (gid, uid, day_ago))
+        recent_n = int(recent["n"]) if recent else 0
+
+        # 2. snitch income
+        snitch_row = await self.repo.get_snitch_row(gid, uid)
+        snitches = int(snitch_row["total_snitches"]) if snitch_row else 0
+
+        # 3. games + audits + tax paid (from logs, may not exist on old DBs)
+        async def _safe(q, p):
+            try:
+                r = await db.fetchone(q, p); return r
+            except Exception:
+                return None
+        game_won = await _safe("SELECT COUNT(*) AS n, COALESCE(SUM(wager),0) AS v FROM game_events WHERE guild_id=? AND winner=?", (gid, uid))
+        audit_did = await _safe("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS v FROM audit_events WHERE guild_id=? AND auditor_id=?", (gid, uid))
+        daily = await _safe("SELECT total_claimed FROM daily_claims WHERE guild_id=? AND user_id=?", (gid, uid))
+
+        # build report
+        e = discord.Embed(title=f"🔍 Audit — {member.display_name}", color=ACCENT)
+        e.description = f"Balance: **{balance:,}** sobs"
+
+        # reactions block with burst + top givers
+        giver_lines = []
+        for g in top_givers:
+            gm = ctx.guild.get_member(int(g["reactor_id"]))
+            gname = gm.display_name if gm else f"user {g['reactor_id']}"
+            giver_lines.append(f"  {gname}: {int(g['n'])}")
+        e.add_field(
+            name="Reactions received (main faucet)",
+            value=(f"Total: **{recv_n:,}**  ·  last 24h: **{recent_n:,}**\n"
+                   f"Top reactors who fed them:\n" + ("\n".join(giver_lines) or "  none")),
+            inline=False)
+
+        # flags
+        flags = []
+        if recent_n > 200:
+            flags.append(f"⚠️ {recent_n} reactions in 24h — possible farming")
+        if top_givers:
+            top_share = int(top_givers[0]["n"]) / max(1, recv_n)
+            if top_share > 0.5 and recv_n > 50:
+                tm = ctx.guild.get_member(int(top_givers[0]["reactor_id"]))
+                tn = tm.display_name if tm else "one account"
+                flags.append(f"⚠️ {int(top_share*100)}% of their sobs came from **{tn}** — possible alt/farm")
+        if game_won and int(game_won["n"]) > 0:
+            flags.append(f"🎲 won {int(game_won['n'])} games (+{int(game_won['v']):,} wagered)")
+
+        other = []
+        other.append(f"Snitches done: {snitches}")
+        if audit_did and int(audit_did["n"]):
+            other.append(f"Audits/heists: {int(audit_did['n'])} (+{int(audit_did['v']):,})")
+        if daily and daily["total_claimed"]:
+            other.append(f"Daily claimed total: {int(daily['total_claimed']):,}")
+        e.add_field(name="Other income", value="\n".join(other), inline=False)
+
+        if flags:
+            e.add_field(name="🚩 Flags", value="\n".join(flags), inline=False)
+        else:
+            e.add_field(name="Flags", value="Nothing obviously abnormal.", inline=False)
+
+        # alt/farm scoring on the top reactors who fed this user
+        from core.economy import score_member_suspicion
+        sus_lines = []
+        sus_total = 0
+        for g in top_givers:
+            rid = int(g["reactor_id"])
+            gm = ctx.guild.get_member(rid)
+            if gm is None:
+                continue
+            la = await db.fetchone(
+                "SELECT last_msg_at FROM user_activity WHERE guild_id=? AND user_id=?", (gid, rid))
+            last_msg = int(la["last_msg_at"]) if la else 0
+            score = score_member_suspicion(gm, last_msg)
+            if score["suspicious"]:
+                sus_total += int(g["n"])
+                sus_lines.append(f"  ⚠️ {gm.display_name}: {int(g['n'])} reactions ({', '.join(score['reasons'])})")
+
+        if sus_lines:
+            pct = int(100 * sus_total / max(1, recv_n))
+            e.add_field(
+                name=f"🚩 Suspicious reactors ({pct}% of their sobs)",
+                value="\n".join(sus_lines) + "\n*New/inactive accounts feeding them sobs = likely alts.*",
+                inline=False)
+
+        e.set_footer(text="High 24h reactions or one dominant/suspicious reactor = likely alt/farm exploit.")
+        await ctx.reply(embed=e)
+
+    @admin_group.command(name="auditexport", aliases=["auditjson"])
+    async def admin_audit_export(self, ctx: commands.Context, member: discord.Member = None):
+        """Full per-user JSON for AI/manual exploit analysis: every sob in/out,
+        reactors, snitches, items bought, games, audits — with alt scoring."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        if member is None:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin auditexport @user`."))
+            return
+        gid, uid = ctx.guild.id, member.id
+        db = await self.db_manager.get()
+        import time as _t
+        from core.economy import score_member_suspicion
+
+        async def rows(q, p):
+            try:
+                return [dict(r) for r in await db.fetchall(q, p)]
+            except Exception:
+                return []
+
+        stats = await self.repo.get_user_stats(gid, uid)
+
+        # everyone who reacted to this user (with alt scoring)
+        reactors = await rows(
+            "SELECT reactor_id, COUNT(*) AS reactions, MIN(created_at) AS first, MAX(created_at) AS last "
+            "FROM sob_events WHERE guild_id=? AND target_id=? GROUP BY reactor_id ORDER BY reactions DESC",
+            (gid, uid))
+        for r in reactors:
+            rid = int(r["reactor_id"])
+            gm = ctx.guild.get_member(rid)
+            la = await db.fetchone("SELECT last_msg_at, msg_count FROM user_activity WHERE guild_id=? AND user_id=?", (gid, rid))
+            last_msg = int(la["last_msg_at"]) if la else 0
+            r["msg_count"] = int(la["msg_count"]) if la else 0
+            if gm is not None:
+                sc = score_member_suspicion(gm, last_msg)
+                r["display_name"] = gm.display_name
+                r["account_created"] = gm.created_at.isoformat() if gm.created_at else None
+                r["joined_server"] = gm.joined_at.isoformat() if gm.joined_at else None
+                r["suspicious"] = sc["suspicious"]
+                r["suspicion_reasons"] = sc["reasons"]
+            else:
+                r["display_name"] = None
+                r["suspicious"] = None
+
+        payload = {
+            "ignio_audit_version": 1,
+            "guild_id": gid,
+            "user_id": uid,
+            "user_name": member.display_name,
+            "exported_at": int(_t.time()),
+            "balance": int(stats["sobs_alltime"]),
+            "account_created": member.created_at.isoformat() if member.created_at else None,
+            "joined_server": member.joined_at.isoformat() if member.joined_at else None,
+            "reactors_who_fed_them": reactors,
+            "reactions_given_by_them": await rows(
+                "SELECT target_id, COUNT(*) AS n FROM sob_events WHERE guild_id=? AND reactor_id=? GROUP BY target_id ORDER BY n DESC",
+                (gid, uid)),
+            "snitches_done": await rows(
+                "SELECT target_id, amount, created_at FROM audit_events WHERE guild_id=? AND auditor_id=? ORDER BY created_at DESC",
+                (gid, uid)),
+            "audited_by_others": await rows(
+                "SELECT auditor_id, amount, created_at FROM audit_events WHERE guild_id=? AND target_id=? ORDER BY created_at DESC",
+                (gid, uid)),
+            "items_bought": await rows(
+                "SELECT item_key, quantity, updated_at FROM shop_inventory WHERE guild_id=? AND user_id=?",
+                (gid, uid)),
+            "games_played": await rows(
+                "SELECT game, challenger, opponent, wager, winner, loser, created_at FROM game_events "
+                "WHERE guild_id=? AND (challenger=? OR opponent=?) ORDER BY created_at DESC",
+                (gid, uid, uid)),
+            "tax_paid": await rows(
+                "SELECT amount, created_at FROM tax_events WHERE guild_id=? AND user_id=? ORDER BY created_at DESC",
+                (gid, uid)),
+        }
+        buf = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8"))
+        file = discord.File(buf, filename=f"audit_{uid}.json")
+        sus_count = sum(1 for r in reactors if r.get("suspicious"))
+        e = _embed("🔍 Audit export ready",
+                   f"Full breakdown for **{member.display_name}**.\n"
+                   f"{len(reactors)} distinct reactors · {sus_count} flagged suspicious.\n"
+                   f"Feed this JSON to an AI to hunt for exploits.")
+        await ctx.reply(embed=e, file=file)
+
+    @admin_group.command(name="weekly", aliases=["weekreport"])
+    async def admin_weekly(self, ctx: commands.Context):
+        """A week's activity report: top earners, top reactor pairs (farm pairs),
+        biggest snitches, item buys — server-wide exploit overview."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        db = await self.db_manager.get()
+        import time as _t
+        week_ago = int(_t.time()) - 604800
+
+        async def rows(q, p):
+            try:
+                return [dict(r) for r in await db.fetchall(q, p)]
+            except Exception:
+                return []
+
+        # top reactor->target PAIRS this week (the farm-pair detector)
+        pairs = await rows(
+            "SELECT reactor_id, target_id, COUNT(*) AS n FROM sob_events "
+            "WHERE guild_id=? AND created_at>=? GROUP BY reactor_id, target_id "
+            "ORDER BY n DESC LIMIT 10", (gid, week_ago))
+
+        e = discord.Embed(title="📅 Weekly report", color=ACCENT)
+        if pairs:
+            lines = []
+            for p in pairs:
+                rm = ctx.guild.get_member(int(p["reactor_id"]))
+                tm = ctx.guild.get_member(int(p["target_id"]))
+                rn = rm.display_name if rm else f"user {p['reactor_id']}"
+                tn = tm.display_name if tm else f"user {p['target_id']}"
+                flag = " 🚩" if int(p["n"]) > 100 else ""
+                lines.append(f"{rn} → {tn}: **{int(p['n'])}**{flag}")
+            e.add_field(name="Top reactor → target pairs (farm detector)",
+                        value="\n".join(lines), inline=False)
+            e.set_footer(text="🚩 = one account reacting to another 100+ times this week = likely farm/alt.")
+        else:
+            e.description = "No reaction activity logged this week yet."
+        await ctx.reply(embed=e)
+
     @admin_group.command(name="export")
     async def admin_export(self, ctx: commands.Context, guild_id: int | None = None):
         if not await self._require_owner(ctx):

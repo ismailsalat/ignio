@@ -170,6 +170,10 @@ class Economy:
         )
         await db.commit()
 
+    async def is_frozen(self, guild_id: int) -> bool:
+        """Emergency economy freeze (admin sets via !admin freeze on)."""
+        return (await self.repo.get_guild_setting(guild_id, "economy:frozen")) == "1"
+
     async def sob_value(self, guild_id: int) -> int:
         """How many sobs a single reaction is worth (before the multiplier).
         Floor-based so sobs always matter, scales up on richer servers."""
@@ -399,3 +403,42 @@ class Economy:
         return {"status": status, "pct": pct,
                 "points": [h["total"] for h in hist],
                 "labels": [h.get("slot", "") for h in hist]}
+
+
+# ---- alt / farm detection helpers (module-level, reusable) ----
+ALT_ACCOUNT_AGE_DAYS = 7      # account younger than this = suspicious
+ALT_JOIN_HOURS = 24          # joined the server within this = suspicious
+ALT_INACTIVE_MINUTES = 10    # no message in this long (while reacting) = suspicious
+
+
+def score_member_suspicion(member, last_msg_at: int) -> dict:
+    """Score how 'alt-like' a member is. Returns {suspicious, reasons[]}.
+    member: a discord.Member (has created_at, joined_at). last_msg_at: unix ts (0 if never)."""
+    import time as _t
+    from datetime import timezone
+    now = _t.time()
+    reasons = []
+
+    try:
+        age_days = (now - member.created_at.replace(tzinfo=timezone.utc).timestamp()) / 86400
+        if age_days < ALT_ACCOUNT_AGE_DAYS:
+            reasons.append(f"account {age_days:.0f}d old")
+    except Exception:
+        pass
+
+    try:
+        if member.joined_at is not None:
+            join_hrs = (now - member.joined_at.replace(tzinfo=timezone.utc).timestamp()) / 3600
+            if join_hrs < ALT_JOIN_HOURS:
+                reasons.append(f"joined {join_hrs:.0f}h ago")
+    except Exception:
+        pass
+
+    # inactivity: never messaged, or not in the last N minutes
+    if last_msg_at == 0:
+        reasons.append("never messaged")
+    elif (now - last_msg_at) > ALT_INACTIVE_MINUTES * 60:
+        mins = (now - last_msg_at) / 60
+        reasons.append(f"inactive {mins:.0f}m")
+
+    return {"suspicious": len(reasons) > 0, "reasons": reasons}

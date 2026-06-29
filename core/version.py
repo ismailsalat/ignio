@@ -29,6 +29,11 @@ CHANGELOG = [
             "Fixed !eco inflation graph (recent change, not lifetime) + dates",
             "!admin export now includes all economy data for tuning",
             "NEW Games category — Russian Roulette PvP (!roulette @user <amount>)",
+            "Anti-exploit: !admin audit traces where a user's sobs came from",
+            "!admin freeze pauses all earning in emergencies",
+            "!admin altblock flags/blocks alt-farm reactions (new/inactive accounts)",
+            "!admin auditexport @user — full JSON for AI exploit analysis",
+            "!admin weekly — weekly farm-pair report",
         ],
     },
     {

@@ -330,6 +330,19 @@ CREATE TABLE IF NOT EXISTS game_events (
 CREATE INDEX IF NOT EXISTS idx_game_events_guild ON game_events(guild_id, created_at);
 """
 
+
+# User activity: last time a user sent a message (for alt/farm detection).
+# Additive. The bot updates last_msg_at on each message.
+_USER_ACTIVITY = """
+CREATE TABLE IF NOT EXISTS user_activity (
+    guild_id    INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    last_msg_at INTEGER NOT NULL DEFAULT 0,
+    msg_count   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, user_id)
+);
+"""
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -340,6 +353,7 @@ MIGRATIONS = [
     (206, "tax_events", _TAX_LOG),
     (207, "audit_events", _AUDIT_LOG),
     (208, "game_events", _GAME_LOG),
+    (209, "user_activity", _USER_ACTIVITY),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

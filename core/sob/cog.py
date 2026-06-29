@@ -37,6 +37,25 @@ class SobCog(commands.Cog):
     # ----- reaction listeners -------------------------------------------
 
     @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # Track real message activity (for alt/farm detection). Bots & DMs ignored.
+        if message.guild is None or message.author.bot:
+            return
+        try:
+            db = await self.sob_repo._db()
+            import time as _t
+            now = int(_t.time())
+            await db.execute(
+                "INSERT INTO user_activity (guild_id, user_id, last_msg_at, msg_count) "
+                "VALUES (?,?,?,1) ON CONFLICT(guild_id, user_id) DO UPDATE SET "
+                "last_msg_at=excluded.last_msg_at, msg_count=msg_count+1",
+                (message.guild.id, message.author.id, now),
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.guild_id is None:
             return
@@ -73,6 +92,22 @@ class SobCog(commands.Cog):
         # the server multiplier. base add_sob credits 1; we add the rest here.
         if added and self.economy is not None:
             try:
+                if await self.economy.is_frozen(payload.guild_id):
+                    return  # economy frozen by admin (exploit response)
+
+                # Alt-block: if enabled, suspicious reactors don't give sobs.
+                altblock = await self.sob_repo.get_guild_setting(payload.guild_id, "economy:altblock")
+                if altblock == "1":
+                    reactor = guild.get_member(payload.user_id)
+                    if reactor is not None:
+                        from core.economy import score_member_suspicion
+                        la = await (await self.sob_repo._db()).fetchone(
+                            "SELECT last_msg_at FROM user_activity WHERE guild_id=? AND user_id=?",
+                            (payload.guild_id, payload.user_id))
+                        last_msg = int(la["last_msg_at"]) if la else 0
+                        if score_member_suspicion(reactor, last_msg)["suspicious"]:
+                            return  # suspicious account — no sobs credited
+
                 value = await self.economy.sob_value(payload.guild_id)
                 mult = await self.economy.get_sob_multiplier(payload.guild_id)
                 total = max(1, int(round(value * mult)))
