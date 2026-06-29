@@ -140,55 +140,219 @@ def treasury_card(stats: dict, name_lookup) -> Image.Image:
 
 
 def guide_card() -> Image.Image:
-    """Newcomer 'how this bot works' explainer — easy bullet points."""
-    W = 820
+    """Newcomer 'how this bot works' explainer — actionable, with real commands."""
+    W = 840
     earn = [
-        "React to messages with a sob emoji",
-        "Snitch on others to wipe their sobs (and steal with boosts)",
-        "Claim your daily sobs — keep a streak for more",
-        "Win admin events & giveaways",
-        "Receive treasury payouts from admins",
-        "...more ways coming soon",
+        ("React with a sob emoji", "on others' messages = they earn"),
+        ("!daily", "free sobs every day — keep a streak"),
+        ("!ss (reply to a msg)", "snitch to wipe & steal their sobs"),
+        ("!buy audit  +  !use audit @user", "steal a cut of someone's sobs"),
     ]
-    spend = [
-        "Buffs & boosts — steal more sobs from others",
-        "Shields — protect yourself from snitches",
-        "Debuffs — freeze, curse & jail your rivals",
-        "Server items — Nitro, gift cards & more",
-        "Games — risk sobs head-to-head (try !roulette)",
+    protect = [
+        ("!buy shield", "then  !use shield <seconds>"),
+        ("Shields block snitches AND audits", "buy seconds, use when targeted"),
+        ("!buy guardian", "blocks the next few snitches"),
     ]
-    H = 230 + len(earn) * 38 + 80 + len(spend) * 38 + 50
+    know = [
+        ("!sob", "your profile & rank"),
+        ("!sob stats", "where your sobs come from"),
+        ("!shop", "everything you can buy"),
+        ("!help", "every command"),
+    ]
+    H = 150 + len(earn)*40 + 70 + len(protect)*40 + 70 + len(know)*36 + 60
     img, d = _base(W, H)
     PAD = 44
 
-    si = icon("sob", 60)
-    if si: img.alpha_composite(si, (PAD, 34))
-    d.text((PAD + 78, 38), "How Ignio Works", font=f_title(40), fill=INK)
-    d.text((PAD + 80, 88), "the sob economy, in a nutshell", font=f_reg(20), fill=DIM)
+    si = icon("sob", 56)
+    if si: img.alpha_composite(si, (PAD, 32))
+    d.text((PAD + 72, 34), "How Ignio Works", font=f_title(38), fill=INK)
+    d.text((PAD + 74, 82), "earn sobs, protect them, climb the leaderboard", font=f_reg(18), fill=DIM)
 
-    # EARN section
-    y = 156
-    d.text((PAD, y), "WAYS TO EARN SOBS", font=f_label(17), fill=AMBER)
-    y += 34
-    for line in earn:
-        si2 = icon("sob", 22)
-        if si2: img.alpha_composite(si2, (PAD, y - 2))
-        d.text((PAD + 34, y), line, font=f_reg(20), fill=INK)
-        y += 38
+    def section(title, color, items, y, cmd_color):
+        d.text((PAD, y), title, font=f_label(17), fill=color)
+        y += 34
+        for cmd, desc in items:
+            d.text((PAD, y), cmd, font=f_num(20), fill=cmd_color)
+            cw = _text_w(d, cmd, f_num(20))
+            d.text((PAD + cw + 16, y + 2), desc, font=f_reg(17), fill=DIM)
+            y += 40
+        return y
 
-    # SPEND section
-    y += 26
-    d.text((PAD, y), "WHAT TO SPEND THEM ON", font=f_label(17), fill=SOFT)
-    y += 34
-    for line in spend:
-        d.ellipse([PAD + 4, y + 7, PAD + 16, y + 19], fill=SOFT)
-        d.text((PAD + 34, y), line, font=f_reg(20), fill=INK)
-        y += 38
+    y = 140
+    y = section("EARN SOBS", AMBER, earn, y, INK)
+    y += 24
+    y = section("PROTECT YOURSELF  (most people forget this!)", GREEN, protect, y, GREEN)
+    y += 24
+    d.text((PAD, y), "GOOD TO KNOW", font=f_label(17), fill=SOFT); y += 34
+    for cmd, desc in know:
+        d.text((PAD, y), cmd, font=f_num(19), fill=AMBER)
+        cw = _text_w(d, cmd, f_num(19))
+        d.text((PAD + cw + 16, y + 2), desc, font=f_reg(16), fill=DIM)
+        y += 36
 
-    # footer line
-    y += 14
-    d.text((PAD, y), "Sobs are your status — spending lowers your rank, so choose wisely.",
-           font=f_reg(17), fill=DIM)
+    y += 8
+    d.text((PAD, y), "Getting audited a lot? Buy a shield - it's the #1 way to stay safe.",
+           font=f_reg(17), fill=INK)
+
+    img.putalpha(_round_mask((W, H), 28))
+    return img
+
+
+# ----------------------------------------------------------------------
+# Audit limit / cooldown card (shown when an auditor is capped or cooling down)
+# ----------------------------------------------------------------------
+RED = (235, 110, 110)
+
+
+def _fmt_dur(secs: int) -> str:
+    secs = max(0, int(secs))
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h: return f"{h}h {m}m"
+    if m: return f"{m}m"
+    return f"{s}s"
+
+
+def audit_limit_card(kind: str, info: dict) -> Image.Image:
+    """kind = 'audit_capped' or 'audit_cooldown'."""
+    W, H = 720, 230
+    img, d = _base(W, H)
+    PAD = 40
+
+    if kind == "audit_capped":
+        title = "Audit limit reached"
+        cap = int(info.get("cap", 0))
+        big = f"{cap}/{cap}"
+        sub = "You've used all your audits for today."
+        hint = "Resets at midnight UTC. Snitch or react to earn meanwhile."
+    else:
+        title = "Audit cooling down"
+        left = int(info.get("cooldown_left", 0))
+        big = _fmt_dur(left)
+        done = int(info.get("done", 0)); cap = int(info.get("cap", 0))
+        sub = f"Wait before your next audit. ({done}/{cap} used today)"
+        hint = "Cooldown stops one person draining the whole server at once."
+
+    d.text((PAD, 36), "⏳  " + title, font=f_title(34), fill=INK)
+    # big value pill
+    d.text((PAD, 104), "READY IN" if kind == "audit_cooldown" else "USED TODAY", font=f_label(15), fill=DIM)
+    d.text((PAD, 126), big, font=f_num(48), fill=RED)
+    d.text((PAD, 196), sub, font=f_reg(18), fill=INK)
+    d.text((PAD, 168), hint, font=f_reg(15), fill=DIM)
+
+    img.putalpha(_round_mask((W, H), 28))
+    return img
+
+
+# ----------------------------------------------------------------------
+# Shield suggestion card (nudges an audit victim to protect their sobs)
+# ----------------------------------------------------------------------
+def shield_suggest_card(lost_today: int, shield_price: int | None = None) -> Image.Image:
+    W, H = 720, 250
+    img, d = _base(W, H)
+    PAD = 40
+
+    d.text((PAD, 34), "🛡️  You're being audited", font=f_title(34), fill=INK)
+
+    # lost-today panel
+    d.text((PAD, 100), "LOST TO AUDITS TODAY", font=f_label(15), fill=DIM)
+    si = icon("sob", 40)
+    if si: img.alpha_composite(si, (PAD, 122))
+    d.text((PAD + 50, 120), f"{_fmt(lost_today)} sobs", font=f_num(40), fill=RED)
+
+    # suggestion pill on the right
+    bx = W - 300
+    d.rounded_rectangle([bx, 96, W - PAD, 176], radius=18, fill=PANEL)
+    d.text((bx + 20, 108), "PROTECT YOURSELF", font=f_label(14), fill=SOFT)
+    tip = "Buy a Shield" + (f" · {_fmt(shield_price)} sobs" if shield_price else "")
+    d.text((bx + 20, 130), tip, font=f_num(22), fill=INK)
+
+    d.text((PAD, 196), "!buy shield   then   !use shield <seconds>", font=f_num(20), fill=AMBER)
+    d.text((PAD, 224), "A shield blocks snitches & audits. Tap Dismiss to hide this.", font=f_reg(15), fill=DIM)
+
+    img.putalpha(_round_mask((W, H), 28))
+    return img
+
+
+# ----------------------------------------------------------------------
+# Stats card — !sob stats. Shows where YOUR sobs come from + costs/cooldowns.
+# ----------------------------------------------------------------------
+def stats_card(name: str, balance: int, earned: dict, spent: dict,
+               rates: dict, cooldowns: dict) -> Image.Image:
+    """
+    earned: {'reactions':int,'snitch':int,'audit':int,'daily':int,'games':int}
+    spent:  {'shop':int,'tax':int,'audits':int,'games':int}
+    rates:  {'sob_value':int,'snitch_steal_pct':int,'audit_basic_pct':float,
+             'audit_heist_pct':float,'audit_cap':int}
+    cooldowns: {'audit_left':int,'audits_left':int}
+    """
+    W, H = 760, 580
+    img, d = _base(W, H)
+    PAD = 40
+
+    # header
+    d.text((PAD, 30), f"{name} — Stats", font=f_title(34), fill=INK)
+    si = icon("sob", 34)
+    if si: img.alpha_composite(si, (PAD, 80))
+    d.text((PAD + 44, 78), f"{_fmt(balance)} sobs", font=f_num(30), fill=AMBER)
+
+    # two columns: EARNED FROM / SPENT ON
+    colL, colR = PAD, W // 2 + 10
+    yTop = 142
+    d.text((colL, yTop), "WHERE YOUR SOBS CAME FROM", font=f_label(15), fill=SOFT)
+    d.text((colR, yTop), "WHAT YOU SPENT ON", font=f_label(15), fill=SOFT)
+
+    def rows(items, x, y, positive):
+        for lbl, val in items:
+            d.text((x, y), lbl, font=f_reg(19), fill=DIM)
+            vt = f"{_fmt(val)}"
+            d.text((x + 250 - _text_w(d, vt, f_num(19)), y), vt, font=f_num(19),
+                   fill=GREEN if positive else RED)
+            y += 34
+        return y
+
+    earned_items = [
+        ("Reactions", earned.get("reactions", 0)),
+        ("Snitch steals", earned.get("snitch", 0)),
+        ("Audit steals", earned.get("audit", 0)),
+        ("Daily", earned.get("daily", 0)),
+        ("Games", earned.get("games", 0)),
+    ]
+    spent_items = [
+        ("Shop", spent.get("shop", 0)),
+        ("Taxes", spent.get("tax", 0)),
+        ("Lost to audits", spent.get("audits", 0)),
+        ("Games", spent.get("games", 0)),
+    ]
+    rows(earned_items, colL, yTop + 32, positive=True)
+    rows(spent_items, colR, yTop + 32, positive=False)
+
+    # divider
+    dy = 358
+    d.line([(PAD, dy), (W - PAD, dy)], fill=PANEL, width=2)
+
+    # "HOW EARNING WORKS" quick reference
+    d.text((PAD, dy + 16), "HOW EARNING WORKS", font=f_label(15), fill=SOFT)
+    ref = [
+        f"Each reaction is worth ~{_fmt(rates.get('sob_value',1))} sobs",
+        f"Snitch steals {rates.get('snitch_steal_pct',50)}% of wiped sobs",
+        f"Audit Basic {int(rates.get('audit_basic_pct',0.03)*100)}% · Heist {int(rates.get('audit_heist_pct',0.08)*100)}% of a target",
+    ]
+    y = dy + 46
+    for line in ref:
+        d.ellipse([PAD + 2, y + 8, PAD + 12, y + 18], fill=SOFT)
+        d.text((PAD + 26, y), line, font=f_reg(18), fill=INK)
+        y += 32
+
+    # your audit allowance pill
+    by = H - 70
+    d.rounded_rectangle([PAD, by, W - PAD, by + 50], radius=16, fill=PANEL)
+    cap = rates.get("audit_cap", 0)
+    left = cooldowns.get("audits_left", cap)
+    cd = cooldowns.get("audit_left", 0)
+    cd_txt = "ready now" if cd <= 0 else f"cooldown {_fmt_dur(cd)}"
+    d.text((PAD + 18, by + 14), f"Your audits today: {left}/{cap} left · {cd_txt}",
+           font=f_num(20), fill=INK)
 
     img.putalpha(_round_mask((W, H), 28))
     return img

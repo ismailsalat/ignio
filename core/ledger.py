@@ -189,3 +189,41 @@ async def reconcile_user(db, guild_id: int, user_id: int, live_balance: int) -> 
         "delta": int(live_balance) - ledger_net,
         "reconciled": int(live_balance) == ledger_net,
     }
+
+
+async def stats_breakdown(db, guild_id: int, user_id: int) -> dict:
+    """Earned/spent grouped into the buckets the !sob stats card shows.
+
+    Earned (positive deltas) and spent (negative deltas) are mapped from the
+    ledger event types into player-facing categories.
+    """
+    rows = await db.fetchall(
+        "SELECT event_type, "
+        "COALESCE(SUM(CASE WHEN delta>0 THEN delta ELSE 0 END),0) AS earned, "
+        "COALESCE(SUM(CASE WHEN delta<0 THEN -delta ELSE 0 END),0) AS spent "
+        "FROM economy_ledger WHERE guild_id=? AND subject_id=? GROUP BY event_type",
+        (guild_id, user_id),
+    )
+    e = {"reactions": 0, "snitch": 0, "audit": 0, "daily": 0, "games": 0}
+    s = {"shop": 0, "tax": 0, "audits": 0, "games": 0}
+    for r in rows:
+        ev = str(r["event_type"]); earned = int(r["earned"]); spent = int(r["spent"])
+        if ev in (EVT_REACTION_ADD,):
+            e["reactions"] += earned
+        elif ev in (EVT_SNITCH_REWARD, EVT_SNITCH_STEAL):
+            e["snitch"] += earned
+        elif ev in (EVT_AUDIT_STEAL,):
+            e["audit"] += earned
+            s["audits"] += spent          # being audited = lost sobs
+        elif ev in (EVT_DAILY, EVT_ADMIN_GIVE, EVT_TREASURY_PAYOUT):
+            e["daily"] += earned
+        elif ev in (EVT_ROULETTE_PAYOUT, EVT_ROULETTE_REFUND):
+            e["games"] += earned
+            s["games"] += spent
+        elif ev in (EVT_ROULETTE_ESCROW,):
+            s["games"] += spent
+        elif ev in (EVT_SHOP_BASE,):
+            s["shop"] += spent
+        elif ev in (EVT_SHOP_TAX, EVT_SNITCH_TAX):
+            s["tax"] += spent
+    return {"earned": e, "spent": s}

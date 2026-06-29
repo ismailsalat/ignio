@@ -332,6 +332,59 @@ class SobCog(commands.Cog):
             top_snitch=await self.sob_repo.get_top_snitch(guild.id),
         ))
 
+    @sob_group.command(name="stats", aliases=["mystats", "income"])
+    @commands.guild_only()
+    async def sob_stats(self, ctx: commands.Context, *, target: str | None = None):
+        """Picture breakdown of where your sobs come from + your audit allowance."""
+        guild = ctx.guild
+        user = ctx.author
+        if target:
+            if ctx.message.mentions:
+                user = ctx.message.mentions[0]
+            else:
+                m = guild.get_member_named(target.strip())
+                if m:
+                    user = m
+
+        gid, uid = guild.id, user.id
+        try:
+            from core import ledger
+            from core.profile.small_cards import stats_card
+            import io
+
+            db = await self.sob_repo._db()
+            stats = await self.sob_repo.get_user_stats(gid, uid)
+            balance = int(stats["sobs_alltime"])
+            bd = await ledger.stats_breakdown(db, gid, uid)
+
+            rates = {"sob_value": 1, "snitch_steal_pct": 50,
+                     "audit_basic_pct": 0.03, "audit_heist_pct": 0.08, "audit_cap": 8}
+            cds = {"audit_left": 0, "audits_left": 8}
+            if self.economy is not None:
+                from core.economy import (SNITCH_STEAL_PCT, AUDIT_BASIC_PCT,
+                                          AUDIT_HEIST_PCT)
+                try:
+                    rates["sob_value"] = await self.economy.sob_value(gid)
+                except Exception:
+                    pass
+                rates["snitch_steal_pct"] = int(SNITCH_STEAL_PCT * 100)
+                rates["audit_basic_pct"] = AUDIT_BASIC_PCT
+                rates["audit_heist_pct"] = AUDIT_HEIST_PCT
+                cap = await self.economy.audit_daily_cap(gid)
+                done = await self.economy.audits_done_today(gid, uid)
+                rates["audit_cap"] = cap
+                cds["audits_left"] = max(0, cap - done)
+                cds["audit_left"] = await self.economy.audit_cooldown_left(gid, uid)
+
+            name = getattr(user, "display_name", "You")
+            img = stats_card(name, balance, bd["earned"], bd["spent"], rates, cds)
+            buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
+            await ctx.reply(file=discord.File(buf, filename="stats.png"))
+            return
+        except Exception as e:
+            print(f"[Ignio][Sob] stats card failed: {e}")
+            await ctx.reply(embed=embeds.error_embed("Couldn't build your stats right now."))
+
     @sob_group.command(name="backgrounds", aliases=["bgs", "wallpapers"])
     @commands.guild_only()
     async def sob_backgrounds(self, ctx: commands.Context):
