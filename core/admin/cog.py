@@ -329,16 +329,6 @@ class AdminCog(commands.Cog):
             parts = clean.strip("<>").split(":")
             if len(parts) >= 2:
                 clean = parts[1]
-        # Guard against everyday emojis that cause accidental sob earning.
-        # The plain Unicode 😭 and the bare name "sob" get used in normal chat,
-        # so accepting them mints sobs from casual reactions. Block them.
-        AMBIGUOUS = {"sob", "😭", "😢", "😪", "🥲", "cry", "crying"}
-        if clean.lower() in AMBIGUOUS:
-            await ctx.reply(embed=_err(
-                f"`{clean}` is an everyday emoji people use in normal chat — accepting it would "
-                f"hand out sobs by accident. Use a **custom server emoji** for sobs instead "
-                f"(e.g. `:handsob:`). If you really must, edit `sob_emojis` directly."))
-            return
         current = await self.repo.add_accepted_emoji(ctx.guild.id, clean)
         display = ", ".join(f"`{x}`" for x in sorted(current))
         await ctx.reply(embed=_ok("Emoji added", f"Now accepting: {display}"))

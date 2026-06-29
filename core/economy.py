@@ -263,17 +263,45 @@ class Economy:
             await self.repo.set_guild_setting(guild_id, MULT_KEY, str(max(0.1, float(value))))
 
     async def suggest_multiplier(self, guild_id: int) -> float:
+        """Sob multiplier (how much each reaction is worth, times sob_value).
+
+        The 2×/3× "bootstrap" boost is ONLY for genuinely new servers — ones
+        with very few active earners. On an established server the median balance
+        can look low simply because snitches/audits/steals keep draining people,
+        and we must NOT mistake that for a new server and over-inflate reactions.
+        So the boost is gated on the number of ACTIVE users, not just the median.
+        """
         ref = await self.reference_balance(guild_id)
         sig = await self.inflation_signal(guild_id)
-        if ref < 100:
-            return 3.0
-        if ref < 300:
-            return 2.0
+        active = await self._active_user_count(guild_id)
+
+        # New, small server -> boost to get the economy moving.
+        if active < 15:
+            if ref < 100:
+                return 3.0
+            if ref < 300:
+                return 2.0
+        elif active < 40:
+            # small-but-growing: a gentle nudge at most
+            if ref < 100:
+                return 1.5
+
+        # Established server: keep reactions sane and let inflation control it.
         if sig["status"] == "red":
             return 0.5
         if sig["status"] == "yellow":
             return 0.75
         return 1.0
+
+    async def _active_user_count(self, guild_id: int) -> int:
+        """How many users have a meaningful balance (>= 10 sobs). Used to tell a
+        brand-new server from an established one whose median looks low due to
+        PvP draining."""
+        db = await self._db()
+        row = await db.fetchone(
+            "SELECT COUNT(*) AS n FROM sob_users WHERE guild_id=? AND sobs_received_alltime >= 10",
+            (guild_id,))
+        return int(row["n"]) if row else 0
 
     async def get_tax_pct(self, guild_id: int) -> int:
         """Tax % added ON TOP of a built-in item's price. Auto-suggested from the

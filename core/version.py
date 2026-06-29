@@ -8,12 +8,24 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Steal Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.3.1",
+        "date": "2026-06-29",
+        "title": "Earning balance fix",
+        "notes": [
+            "Fixed the 'extra sobs' issue: each reaction was worth 9 sobs, now worth 3",
+            "Cause was the new-server multiplier boost misfiring on an established server",
+            "The boost now only applies to genuinely new servers (few active earners),",
+            "  not mature ones whose median looks low because of snitch/audit/steal draining",
+            "The crying emoji stays a valid sob emoji - it was never the bug",
+        ],
+    },
     {
         "version": "1.3.0",
         "date": "2026-06-29",
