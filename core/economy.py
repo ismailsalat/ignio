@@ -250,12 +250,16 @@ class Economy:
 
     # ---- burned (anti-inflation sink: the base price is destroyed) ----
     async def add_burned(self, guild_id: int, amount: int) -> None:
-        raw = await self.repo.get_guild_setting(guild_id, BURNED_KEY)
-        try:
-            cur = int(raw)
-        except (TypeError, ValueError):
-            cur = 0
-        await self.repo.set_guild_setting(guild_id, BURNED_KEY, str(cur + max(0, amount)))
+        # serialise the read-modify-write of the burned counter per guild so
+        # concurrent purchases can't lose a burn increment to a race.
+        db = await self._db()
+        async with db.key_lock("burned", guild_id):
+            raw = await self.repo.get_guild_setting(guild_id, BURNED_KEY)
+            try:
+                cur = int(raw)
+            except (TypeError, ValueError):
+                cur = 0
+            await self.repo.set_guild_setting(guild_id, BURNED_KEY, str(cur + max(0, amount)))
 
     async def get_burned(self, guild_id: int) -> int:
         raw = await self.repo.get_guild_setting(guild_id, BURNED_KEY)
@@ -273,11 +277,14 @@ class Economy:
             return 0
 
     async def add_treasury(self, guild_id: int, amount: int, *, payer_id: int | None = None) -> None:
-        """Add tax to the treasury and log the payment for stats."""
-        cur = await self.get_treasury(guild_id)
-        await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur + max(0, amount)))
+        """Add tax to the treasury and log the payment for stats. The treasury
+        counter update is serialised per guild so concurrent tax payments can't
+        race and lose a deposit."""
+        db = await self._db()
+        async with db.key_lock("treasury", guild_id):
+            cur = await self.get_treasury(guild_id)
+            await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur + max(0, amount)))
         if payer_id is not None and amount > 0:
-            db = await self._db()
             await db.execute(
                 "INSERT INTO tax_events (guild_id, user_id, amount, created_at) VALUES (?,?,?,?)",
                 (guild_id, payer_id, int(amount), int(time.time())),
@@ -285,12 +292,16 @@ class Economy:
             await db.commit()
 
     async def spend_treasury(self, guild_id: int, amount: int) -> bool:
-        """Remove sobs from the treasury (admin payout). Returns False if short."""
-        cur = await self.get_treasury(guild_id)
-        if amount > cur:
-            return False
-        await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur - amount))
-        return True
+        """Remove sobs from the treasury (admin payout). Returns False if short.
+        Serialised per guild so the pot can't be double-spent by two concurrent
+        payouts."""
+        db = await self._db()
+        async with db.key_lock("treasury", guild_id):
+            cur = await self.get_treasury(guild_id)
+            if amount > cur:
+                return False
+            await self.repo.set_guild_setting(guild_id, TREASURY_KEY, str(cur - amount))
+            return True
 
     async def treasury_stats(self, guild_id: int) -> dict:
         """Stats for the treasury card: pot, taxed today/week/all, recent, top."""

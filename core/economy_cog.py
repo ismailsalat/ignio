@@ -153,7 +153,12 @@ class EconomyCog(commands.Cog):
         if not ok:
             pot = await self.eco.get_treasury(gid)
             await ctx.reply(embed=self._err(f"The treasury only has **{_fmt(pot)}** sobs.")); return
-        new_bal = await self.eco.repo.adjust_received(gid, member.id, amount)
+        from core import ledger as _ledger
+        new_bal = await self.eco.repo.adjust_received(
+            gid, member.id, amount,
+            event_type=_ledger.EVT_TREASURY_PAYOUT,
+            actor_id=ctx.author.id, counterparty_id=ctx.author.id,
+            treasury_amount=amount, metadata={"admin": ctx.author.id})
         e = discord.Embed(title="✅ Treasury payout", color=ACCENT)
         e.description = (f"Gave **{_fmt(amount)} sobs** to {member.mention} from the treasury.\n"
                         f"Their balance: **{_fmt(new_bal)}** · Pot left: **{_fmt(await self.eco.get_treasury(gid))}**")
