@@ -16,21 +16,35 @@ import unicodedata
 
 
 def clean_name(s: str) -> str:
-    """Strip emoji and symbols the bundled (Latin) fonts can't render, so names
-    don't show as boxes. Keeps letters, digits, punctuation, spaces."""
+    """Strip emoji, symbols, and exotic-script characters the bundled (Latin)
+    fonts can't render, so names don't show as ☐ boxes. Keeps Latin, Greek,
+    Cyrillic, CJK, Hangul, Hiragana/Katakana, digits, punctuation, spaces."""
     if not s:
         return ""
     out = []
     for ch in s:
         cp = ord(ch)
+        if ch.isspace():
+            out.append(ch)
+            continue
         cat = unicodedata.category(ch)
-        # drop emoji / symbols / private-use / format chars
-        if cat in ("So", "Sk", "Cs", "Cf", "Co"):
+        # drop emoji / symbols / private-use / format / surrogate chars
+        if cat in ("So", "Sk", "Cs", "Cf", "Co", "Cn"):
             continue
-        if (0x1F000 <= cp <= 0x1FAFF) or (0x2600 <= cp <= 0x27BF) or cp in (0x200D, 0xFE0F):
-            continue
-        out.append(ch)
-    return "".join(out).strip()
+        # keep only scripts the bundled fonts actually have glyphs for
+        keep = (
+            cp < 0x250 or                  # Latin + Latin-1 + Latin Ext-A/B
+            0x250 <= cp <= 0x2af or        # IPA extensions
+            0x370 <= cp <= 0x52f or        # Greek + Cyrillic
+            0x1e00 <= cp <= 0x1eff or      # Latin Extended Additional
+            0x2010 <= cp <= 0x205e or      # general punctuation
+            0x3040 <= cp <= 0x30ff or      # Hiragana + Katakana
+            0x4e00 <= cp <= 0x9fff or      # CJK unified
+            0xac00 <= cp <= 0xd7a3         # Hangul syllables
+        )
+        if keep:
+            out.append(ch)
+    return " ".join("".join(out).split()).strip()
 
 
 def renderable(s: str, threshold: float = 0.5) -> bool:

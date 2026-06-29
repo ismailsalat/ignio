@@ -20,6 +20,63 @@ def _base(W, H, r=28):
     return img, ImageDraw.Draw(img)
 
 
+# A scratch drawer for width measurement without an image in hand.
+_SCRATCH = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+
+
+def _renderable(ch, font) -> bool:
+    """True if the font has a real glyph for this character (not a .notdef box)."""
+    try:
+        # PIL exposes the glyph mask; a zero-size mask means no glyph.
+        m = font.getmask(ch)
+        return m.getbbox() is not None or ch == " "
+    except Exception:
+        return True
+
+
+def _clean_name(name: str, font) -> str:
+    """Drop characters the card font can't draw (they show as ☐ boxes), e.g.
+    exotic unicode in display names. Collapses leftover whitespace. Keeps emoji
+    out since the card fonts aren't color-emoji fonts."""
+    if not name:
+        return "user"
+    out = []
+    for ch in str(name):
+        cp = ord(ch)
+        if ch.isspace():
+            out.append(ch)
+            continue
+        # Strip emoji, symbols, variation selectors, and exotic scripts that the
+        # UI font has no glyph for (they'd render as ☐). Keep the common ranges:
+        # Latin, Latin-ext, Greek, Cyrillic, CJK, Hangul, Hiragana/Katakana,
+        # punctuation, digits.
+        keep = (
+            cp < 0x250 or                      # Latin + Latin-1 + Latin Ext-A/B
+            0x370 <= cp <= 0x52f or            # Greek + Cyrillic
+            0x1e00 <= cp <= 0x1eff or          # Latin Extended Additional
+            0x2010 <= cp <= 0x205e or          # general punctuation (dashes, quotes)
+            0x3040 <= cp <= 0x30ff or          # Hiragana + Katakana
+            0x4e00 <= cp <= 0x9fff or          # CJK
+            0xac00 <= cp <= 0xd7a3             # Hangul syllables
+        )
+        if keep and _renderable(ch, font):
+            out.append(ch)
+    cleaned = "".join(out).strip()
+    cleaned = " ".join(cleaned.split())
+    return cleaned or "user"
+
+
+def _safe_name(name: str, font, max_w: int) -> str:
+    """Clean a display name and ellipsize it to fit max_w pixels with `font`."""
+    s = _clean_name(name, font)
+    if _text_w(_SCRATCH, s, font) <= max_w:
+        return s
+    ell = "…"
+    while s and _text_w(_SCRATCH, s + ell, font) > max_w:
+        s = s[:-1]
+    return (s + ell) if s else ell
+
+
 def daily_card(reward: int, streak: int, balance: int, next_reward: int, maxed: bool) -> Image.Image:
     W, H = 720, 300
     img, d = _base(W, H)
@@ -121,9 +178,11 @@ def treasury_card(stats: dict, name_lookup) -> Image.Image:
     y = 320
     if recent:
         for r in recent:
-            d.text((PAD, y), name_lookup(r["user_id"])[:24], font=f_reg(17), fill=INK)
             amt = f"+{_fmt(r['amount'])}"
-            d.text((W - PAD - _text_w(d, amt, f_num(17)), y), amt, font=f_num(17), fill=SOFT)
+            aw = _text_w(d, amt, f_num(17))
+            nm = _safe_name(name_lookup(r["user_id"]), f_reg(17), max_w=W - 2 * PAD - aw - 16)
+            d.text((PAD, y), nm, font=f_reg(17), fill=INK)
+            d.text((W - PAD - aw, y), amt, font=f_num(17), fill=SOFT)
             y += 34
     else:
         d.text((PAD, y), "No tax collected yet.", font=f_reg(17), fill=DIM)
@@ -132,7 +191,8 @@ def treasury_card(stats: dict, name_lookup) -> Image.Image:
     # all-time top
     top = stats.get("top")
     if top:
-        d.text((PAD, y + 6), f"Top contributor: {name_lookup(top['user_id'])[:20]} "
+        tn = _safe_name(name_lookup(top['user_id']), f_reg(16), max_w=W - 2 * PAD - 200)
+        d.text((PAD, y + 6), f"Top contributor: {tn} "
                f"({_fmt(top['total'])})", font=f_reg(16), fill=DIM)
 
     img.putalpha(_round_mask((W, H), 28))
@@ -294,8 +354,9 @@ def stats_card(name: str, balance: int, earned: dict, spent: dict,
     img, d = _base(W, H)
     PAD = 40
 
-    # header
-    d.text((PAD, 30), f"{name} — Stats", font=f_title(34), fill=INK)
+    # header — name is cleaned of unrenderable glyphs + ellipsized to fit
+    safe = _safe_name(name, f_title(34), max_w=W - 2 * PAD - 150)
+    d.text((PAD, 30), f"{safe} — Stats", font=f_title(34), fill=INK)
     si = icon("sob", 34)
     if si: img.alpha_composite(si, (PAD, 80))
     d.text((PAD + 44, 78), f"{_fmt(balance)} sobs", font=f_num(30), fill=AMBER)

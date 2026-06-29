@@ -9,7 +9,19 @@ from core.profile.render import (
     _diag_gradient, _round_mask, _text_w, _fmt, _cover,
     f_title, f_label, f_num, f_reg, WALLPAPERS, DEFAULT_ACCENT, THEMES,
     INK, INK_DIM, INK_FAINT, BG_A, BG_B, CARD_EDGE, PANEL, TRACK,
+    clean_name,
 )
+
+
+def _fit_name(draw, name, font, max_w):
+    """Strip box-glyph characters, then ellipsize to fit max_w pixels."""
+    s = clean_name(str(name or "")) or "user"
+    if _text_w(draw, s, font) <= max_w:
+        return s
+    ell = "…"
+    while s and _text_w(draw, s + ell, font) > max_w:
+        s = s[:-1]
+    return (s + ell) if s else ell
 
 
 def _resolve_accent(theme):
@@ -50,7 +62,7 @@ def make_leaderboard_card(data: dict, wallpaper: str | None = None, theme: str =
     d.text((PAD, 34), "Sob Leaderboard", font=f_title(46), fill=INK)
     gname = data.get("guild_name", "")
     if gname:
-        d.text((PAD, 90), gname, font=f_reg(24), fill=INK_DIM)
+        d.text((PAD, 90), _fit_name(d, gname, f_reg(24), W - 2 * PAD), font=f_reg(24), fill=INK_DIM)
 
     # top-10 list
     top = data.get("top", [])[:10]
@@ -66,12 +78,15 @@ def make_leaderboard_card(data: dict, wallpaper: str | None = None, theme: str =
         rkf = f_num(22)
         d.text((PAD + 22 - _text_w(d, rk, rkf) / 2, ry + 5), rk,
                font=rkf, fill=(30, 26, 16) if i < 3 else INK)
-        # name
-        d.text((PAD + 60, ry + 4), entry["name"][:28], font=f_title(26), fill=INK)
-        # sobs (right aligned)
+        # name — cleaned of box glyphs + ellipsized so the score never overlaps
         val = _fmt(entry["sobs"])
         vf = f_num(26)
-        d.text((W - PAD - _text_w(d, val, vf), ry + 4), val, font=vf, fill=ACCENT_SOFT)
+        val_w = _text_w(d, val, vf)
+        name_max = (W - PAD - val_w - 20) - (PAD + 60)
+        nm = _fit_name(d, entry["name"], f_title(26), name_max)
+        d.text((PAD + 60, ry + 4), nm, font=f_title(26), fill=INK)
+        # sobs (right aligned)
+        d.text((W - PAD - val_w, ry + 4), val, font=vf, fill=ACCENT_SOFT)
 
     # summary strip at the bottom
     sy = 140 + 10 * row_h + 16
@@ -87,7 +102,7 @@ def make_leaderboard_card(data: dict, wallpaper: str | None = None, theme: str =
         cx = PAD + i * cw + 18
         d.text((cx, sy + 18), label, font=f_label(15), fill=INK_DIM)
         if info:
-            d.text((cx, sy + 40), info["name"][:14], font=f_title(20), fill=INK)
+            d.text((cx, sy + 40), _fit_name(d, info["name"], f_title(20), cw - 28), font=f_title(20), fill=INK)
             d.text((cx, sy + 68), _fmt(info["count"]), font=f_num(22), fill=ACCENT_SOFT)
         else:
             d.text((cx, sy + 40), "—", font=f_title(20), fill=INK_FAINT)
