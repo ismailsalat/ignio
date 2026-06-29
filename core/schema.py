@@ -473,6 +473,37 @@ ALTER TABLE shop_inventory ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
 """
 
 
+# ---------------------------------------------------------------------------
+# Migration 216: Steal system (high-risk PvP gamble).
+# Every !steal attempt is logged here for cooldowns, daily victim caps,
+# per-pair lockout, and stats. Append-only.
+# ---------------------------------------------------------------------------
+_STEAL_EVENTS = """
+CREATE TABLE IF NOT EXISTS steal_events (
+    steal_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id     INTEGER NOT NULL,
+    attacker_id  INTEGER NOT NULL,
+    target_id    INTEGER NOT NULL,
+    planned      INTEGER NOT NULL DEFAULT 0,
+    chance       INTEGER NOT NULL DEFAULT 0,      -- final % chance used
+    roll         INTEGER NOT NULL DEFAULT 0,      -- 0..99 roll
+    success      INTEGER NOT NULL DEFAULT 0,      -- 1 success, 0 fail
+    moved        INTEGER NOT NULL DEFAULT 0,      -- sobs actually stolen
+    fee          INTEGER NOT NULL DEFAULT 0,      -- caught fee on failure
+    tax          INTEGER NOT NULL DEFAULT 0,
+    burned       INTEGER NOT NULL DEFAULT 0,
+    lockpick     INTEGER NOT NULL DEFAULT 0,      -- 1 if lockpick used
+    safelock     INTEGER NOT NULL DEFAULT 0,      -- 1 if target had safe lock
+    day          TEXT    NOT NULL,                -- UTC YYYY-MM-DD
+    created_at   INTEGER NOT NULL,
+    tx_id        TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_steal_attacker ON steal_events(guild_id, attacker_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_steal_target   ON steal_events(guild_id, target_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_steal_day      ON steal_events(guild_id, day);
+"""
+
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -490,6 +521,7 @@ MIGRATIONS = [
     (213, "effect_charges", _EFFECT_CHARGES),
     (214, "game_escrow", _GAME_ESCROW),
     (215, "protection_inventory_expiry", _PROTECTION_EXPIRY),
+    (216, "steal_events", _STEAL_EVENTS),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

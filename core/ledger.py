@@ -59,6 +59,10 @@ EVT_EFFECT_CHARGE = "effect_charge_consumed"
 EVT_ROULETTE_ESCROW = "roulette_escrow_deposit"
 EVT_ROULETTE_PAYOUT = "roulette_payout"
 EVT_ROULETTE_REFUND = "roulette_refund"
+EVT_STEAL_SUCCESS = "steal_success"
+EVT_STEAL_FAIL_FEE = "steal_fail_fee"
+EVT_STEAL_TAX = "steal_tax"
+EVT_STEAL_BURN = "steal_burn"
 EVT_IMPORT = "import"
 EVT_RESET = "reset"
 EVT_RECOUNT = "recount"
@@ -215,6 +219,11 @@ async def stats_breakdown(db, guild_id: int, user_id: int) -> dict:
         elif ev in (EVT_AUDIT_STEAL,):
             e["audit"] += earned
             s["audits"] += spent          # being audited = lost sobs
+        elif ev in (EVT_STEAL_SUCCESS,):
+            e["snitch"] += earned          # steal winnings fold into the "snitch/hunt" bucket
+            s["audits"] += spent           # being stolen from = lost sobs
+        elif ev in (EVT_STEAL_FAIL_FEE,):
+            s["tax"] += spent              # caught fee leaves your balance
         elif ev in (EVT_DAILY, EVT_ADMIN_GIVE, EVT_TREASURY_PAYOUT):
             e["daily"] += earned
         elif ev in (EVT_ROULETTE_PAYOUT, EVT_ROULETTE_REFUND):
