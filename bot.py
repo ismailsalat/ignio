@@ -106,6 +106,15 @@ async def run() -> None:
                 traceback.print_exc()
         print("[Ignio] setup_hook: done")
 
+        # Safety: refund any roulette/game escrow left 'pending' from a crash or
+        # restart mid-match, so locked wagers are never silently lost.
+        try:
+            refunded = await games_engine.recover_pending()
+            if refunded:
+                print(f"[Ignio] ♻️ refunded {refunded} orphaned game escrow(s)")
+        except Exception as exc:
+            print(f"[Ignio] ⚠️ escrow recovery skipped (error: {exc})")
+
     @bot.event
     async def on_ready():
         print(f"[Ignio] ✅ ONLINE as {bot.user} | guilds={len(bot.guilds)} | env={settings.env}")

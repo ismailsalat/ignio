@@ -32,6 +32,7 @@ class RouletteView(discord.ui.View):
         self.wager = wager
         self.message = None
         self.resolved = False
+        self.game_id = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # only the challenged player may press the buttons
@@ -46,10 +47,16 @@ class RouletteView(discord.ui.View):
             return
         self.resolved = True
         gid = self.ctx.guild.id
+        # refund any escrow that was locked (defensive — usually none yet)
+        if getattr(self, "game_id", None):
+            try:
+                await self.cog.engine.refund_match(self.game_id, reason="timeout")
+            except Exception:
+                pass
         self.cog.engine.clear_busy(gid, self.challenger.id, self.opponent.id)
         try:
             e = discord.Embed(title="🔫 Challenge expired",
-                              description=f"{self.opponent.mention} didn't answer in time. Wager refunded.",
+                              description=f"{self.opponent.mention} didn't answer in time. No sobs lost.",
                               color=RED)
             if self.message:
                 await self.message.edit(embed=e, view=None)
@@ -72,6 +79,11 @@ class RouletteView(discord.ui.View):
             return
         self.resolved = True
         gid = self.ctx.guild.id
+        if getattr(self, "game_id", None):
+            try:
+                await self.cog.engine.refund_match(self.game_id, reason="declined")
+            except Exception:
+                pass
         self.cog.engine.clear_busy(gid, self.challenger.id, self.opponent.id)
         e = discord.Embed(title="🔫 Challenge declined",
                           description=f"{self.opponent.mention} backed out. No sobs lost.",
@@ -148,7 +160,9 @@ class RouletteCog(commands.Cog):
         view.message = await ctx.reply(embed=e, view=view)
 
     async def _play(self, interaction, view):
-        """Run the dramatic spin then settle."""
+        """Lock both wagers into escrow, run the dramatic spin, then settle from
+        escrow. If anything fails mid-way the escrow is refunded so no sobs are
+        lost or duplicated."""
         gid = view.ctx.guild.id
         chal, opp, wager = view.challenger, view.opponent, view.wager
         msg = view.message
@@ -160,53 +174,62 @@ class RouletteCog(commands.Cog):
             except Exception:
                 pass
 
-        # re-validate both can still pay (balances may have changed)
-        if not await self.engine.can_afford(gid, chal.id, wager) or \
-           not await self.engine.can_afford(gid, opp.id, wager):
+        # Lock both wagers NOW (escrow). Neither can spend them during the spin.
+        ok, reason, game_id = await self.engine.open_match(gid, "roulette", chal.id, opp.id, wager)
+        if not ok:
             self.engine.clear_busy(gid, chal.id, opp.id)
             await show(f"One player can no longer cover **{_fmt(wager)}** sobs. Match cancelled.", RED)
             return
+        view.game_id = game_id
 
-        await show(f"{opp.mention} **accepts!**\nBoth wager **{_fmt(wager)}** sobs. Loading one round into six chambers…")
-        await asyncio.sleep(1.4)
-        await show("Spinning the cylinder…  🌀")
-        await asyncio.sleep(1.4)
+        try:
+            await show(f"{opp.mention} **accepts!**\nBoth wager **{_fmt(wager)}** sobs (locked in escrow). Loading one round into six chambers…")
+            await asyncio.sleep(1.4)
+            await show("Spinning the cylinder…  🌀")
+            await asyncio.sleep(1.4)
 
-        # Visible, provably-fair mechanic: 6 chambers, one bullet, players alternate
-        # pulling. Whoever pulls the loaded chamber loses. The bullet position and
-        # turn order are random and shown, so there's nothing hidden.
-        bullet = random.randint(1, 6)        # which chamber the round is in
-        first = random.choice([chal, opp])   # who pulls first (random, fair)
-        second = opp if first is chal else chal
-        order = []
-        for i in range(1, 7):
-            order.append(first if i % 2 == 1 else second)
-        loser_member = order[bullet - 1]
+            bullet = random.randint(1, 6)
+            first = random.choice([chal, opp])
+            second = opp if first is chal else chal
+            order = []
+            for i in range(1, 7):
+                order.append(first if i % 2 == 1 else second)
+            loser_member = order[bullet - 1]
 
-        await show("Trigger pulled…  😬")
-        await asyncio.sleep(1.2)
+            await show("Trigger pulled…  😬")
+            await asyncio.sleep(1.2)
 
-        # reveal chamber by chamber up to the bullet (dramatic, and shows it's real)
-        track = ""
-        for i in range(1, bullet + 1):
-            who = order[i - 1]
-            if i < bullet:
-                track += f"Chamber {i} — *click* ({who.display_name} safe)\n"
-            else:
-                track += f"Chamber {i} — **BANG** 💥 ({who.display_name})\n"
-            await show(f"🔫 Spinning through the chambers…\n\n{track}")
-            await asyncio.sleep(0.9)
+            track = ""
+            for i in range(1, bullet + 1):
+                who = order[i - 1]
+                if i < bullet:
+                    track += f"Chamber {i} — *click* ({who.display_name} safe)\n"
+                else:
+                    track += f"Chamber {i} — **BANG** 💥 ({who.display_name})\n"
+                await show(f"🔫 Spinning through the chambers…\n\n{track}")
+                await asyncio.sleep(0.9)
 
-        winner = chal.id if loser_member.id == opp.id else opp.id
-        result = await self.engine.settle(gid, "roulette", chal.id, opp.id, winner, wager)
-        self.engine.clear_busy(gid, chal.id, opp.id)
+            winner = chal.id if loser_member.id == opp.id else opp.id
+            result = await self.engine.settle_match(game_id, winner)
+            if result is None:
+                # already settled/refunded somehow — recover safely
+                await self.engine.refund_match(game_id, reason="settle_noop")
+                await show("Match could not be settled — wagers refunded.", RED)
+                return
+        except Exception as e:
+            print(f"[Ignio][Roulette] play failed, refunding escrow: {e}")
+            await self.engine.refund_match(game_id, reason="error")
+            await show("Something went wrong — both wagers were refunded.", RED)
+            return
+        finally:
+            self.engine.clear_busy(gid, chal.id, opp.id)
 
         win_member = chal if winner == chal.id else opp
         lose_member = opp if winner == chal.id else chal
         e = discord.Embed(
             title="🔫 *click… BANG!*",
             description=(f"The round was in **chamber {bullet}** of 6.\n\n"
-                         f"💀 {lose_member.mention} takes the hit — loses **{_fmt(result['paid'])}** sobs.\n"
+                         f"💀 {lose_member.mention} takes the hit — loses **{_fmt(wager)}** sobs.\n"
                          f"🏆 {win_member.mention} walks away with **{_fmt(result['net'])}** sobs!"),
             color=ACCENT,
         )
