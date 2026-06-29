@@ -23,7 +23,7 @@ DEFAULT_TAX_PCT = 30        # % of a built-in purchase that is burned
 # Power-weighted: stronger items cost more. Shield is per-second (tiny base).
 ITEM_TIERS = {
     "shield": 0.02,        # per SECOND of protection (stackable)
-    "guardian": 8.0, "audit_ward": 4.0, "reflect": 50.0,
+    "guardian": 8.0, "audit_ward": 4.0, "vault_ward": 10.0, "reflect": 50.0,
     "freeze": 0.5, "freeze_deep": 1.7,
     "audit": 1.2, "heist": 45.0,
     "slow_curse": 8.0, "marked": 16.0, "jail": 65.0,

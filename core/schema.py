@@ -463,6 +463,16 @@ CREATE INDEX IF NOT EXISTS idx_game_matches_status ON game_matches(guild_id, sta
 """
 
 
+# ---------------------------------------------------------------------------
+# Migration 215: protection inventory expiry.
+# Stops players stockpiling cheap protection while poor and using it later when
+# rich. Protection bought in bulk gets an expiry (24h); expired rows are pruned.
+# ---------------------------------------------------------------------------
+_PROTECTION_EXPIRY = """
+ALTER TABLE shop_inventory ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
+"""
+
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -479,6 +489,7 @@ MIGRATIONS = [
     (212, "security_log", _SECURITY_LOG),
     (213, "effect_charges", _EFFECT_CHARGES),
     (214, "game_escrow", _GAME_ESCROW),
+    (215, "protection_inventory_expiry", _PROTECTION_EXPIRY),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

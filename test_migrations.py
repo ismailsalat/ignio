@@ -46,7 +46,7 @@ async def scenario_fresh():
     assert "credited_amount" in cols["sob_events"], "credited_amount missing on sob_events"
     assert "multiplier_ref" in cols["sob_events"], "multiplier_ref missing"
     assert "charges_remaining" in cols["active_effects"], "charges_remaining missing"
-    assert migs[-1] == 214, f"latest migration should be 214, got {migs[-1]}"
+    assert migs[-1] == 215, f"latest migration should be 215, got {migs[-1]}"
     shutil.rmtree(d)
     print("  A. fresh DB: all new tables/columns present, migrations 200-214 OK")
 
@@ -65,7 +65,7 @@ async def scenario_existing():
     await db.connect()
     await db.close()
     after_cols, after_migs = tables_and_columns(path)
-    assert after_migs[-1] == 214, f"should upgrade to 214, got {after_migs}"
+    assert after_migs[-1] == 215, f"should upgrade to 215, got {after_migs}"
     assert "credited_amount" in after_cols["sob_events"]
     assert "charges_remaining" in after_cols["active_effects"]
     assert "economy_ledger" in after_cols
