@@ -8,12 +8,28 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Control Update"
+CODENAME = "Protection Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.2.0",
+        "date": "2026-06-29",
+        "title": "Protection Update (risk-based shields)",
+        "notes": [
+            "Protection is now priced from YOUR own risk, never above the damage it prevents",
+            "Audit Ward, Shield, Guardian, Reflect now cost a fair fraction of what you'd lose",
+            "NEW Vault Ward - blocks Basic Audits AND Grand Heists (best for rich players)",
+            "Protection prices scale with your balance: small players afford it, rich pay more",
+            "Uses your 24h high balance, so you can't dump sobs to buy cheap protection",
+            "Bulk-bought protection expires in 24h (no stockpiling cheap shields)",
+            "!sob stats now shows your audit risk + the recommended ward to buy",
+            "Protection isn't taxed (it's defensive); prices auto-tune daily within safe limits",
+            "Admins: !admin protection to view/override the protection price factor",
+        ],
+    },
     {
         "version": "1.1.1",
         "date": "2026-06-29",
