@@ -39,55 +39,105 @@ async def do_buy(shop, sob_repo, guild_id, user_id, item_key, qty=1):
     return await shop.buy(guild_id, user_id, item_key.lower(), qty)
 
 
-async def do_use(shop, guild_id, user, item_key, target=None):
+async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=None):
     """Returns (ok, embed). Handles built-in + custom (claim) items.
-    item_key may be a key or a display name."""
-    # resolve to canonical key
+    item_key may be a key or a display name. `amount` is used for stackable
+    items like the per-second Shield."""
     resolved = await shop.get_item(guild_id, item_key)
     key = resolved["key"] if resolved else item_key.lower()
     inv = await shop.get_inventory(guild_id, user.id)
-    if inv.get(key, 0) < 1:
+    owned = inv.get(key, 0)
+    if owned < 1:
         return False, embeds.error_embed(f"You don't own a `{key}`.")
 
     builtin = BUILTIN_ITEMS.get(key)
     db = await shop._db()
 
-    # custom server item -> claim (cog handles the notification with context)
+    # custom server item -> claim
     if builtin is None:
         await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
         await db.commit()
         catalog = await shop.get_catalog(guild_id)
         it = next((c for c in catalog if c["key"] == key), {"name": key, "icon": "🎁", "key": key})
-        # special return: ("claim", item) tells the caller to post a claim notice
         return "claim", it
 
     effect_key = builtin["effect_key"]
     duration = builtin.get("duration", 0)
     mechanic = builtin.get("mechanic", "")
-    expires_at = now_ts() + duration if duration else 0
     is_targeted = key in TARGETED_EFFECTS
+    eco = economy if economy is not None else getattr(shop, "economy", None)
 
-    # ---- instant steal (Tax Audit): no effect stored, immediate transfer ----
-    if mechanic == "instant_steal_pct":
+    # jailed? can't use items
+    if await shop.has_effect(guild_id, user.id, "jail"):
+        return False, embeds.error_embed("You're jailed — you can't use items right now.")
+
+    # ---- AUDIT (basic + heist): instant steal, blockable, crit, daily cap ----
+    if mechanic in ("audit_basic", "audit_heist"):
         if target is None:
             return False, embeds.error_embed(f"`{key}` needs a target. Use `!use {key} @user`.")
         if target.id == user.id:
-            return False, embeds.error_embed("You can't target yourself.")
+            return False, embeds.error_embed("You can't audit yourself.")
         if getattr(target, "bot", False):
             return False, embeds.error_embed("You can't target a bot.")
+        if eco is None:
+            return False, embeds.error_embed("Audits aren't available right now.")
+
+        import random
+        from core.economy import AUDIT_BASIC_PCT, AUDIT_HEIST_PCT, AUDIT_HEIST_CRIT
+
+        tgt_stats = await shop.sob_repo.get_user_stats(guild_id, target.id)
+        tgt_bal = int(tgt_stats["sobs_alltime"])
+
+        # daily anti-gang-up immunity
+        if await eco.is_audit_immune(guild_id, target.id, tgt_bal):
+            return False, embeds.error_embed(
+                f"{target.mention} has already been audited heavily today — they're protected until tomorrow.")
+
+        is_heist = mechanic == "audit_heist"
+        pct = AUDIT_HEIST_PCT if is_heist else AUDIT_BASIC_PCT
+
+        # shield / ward check
+        crit = False
+        blocked = False
+        if is_heist:
+            # heist: 20% crit pierces & breaks a shield; otherwise blocked by shield
+            if await shop.has_effect(guild_id, target.id, "shield"):
+                if random.random() < AUDIT_HEIST_CRIT:
+                    crit = True
+                    await shop.clear_effect(guild_id, target.id, "shield")
+                else:
+                    blocked = True
+        else:
+            # basic: blocked by a shield OR an audit ward
+            if await shop.has_effect(guild_id, target.id, "shield") or \
+               await shop.has_effect(guild_id, target.id, "audit_ward"):
+                blocked = True
+
+        if blocked:
+            await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+            await db.commit()
+            return True, embeds.error_embed(
+                f"🛡️ {target.mention}'s shield blocked your {builtin['name']}! (item consumed)")
+
+        # daily cap: don't let one audit exceed remaining immunity room
+        already = await eco.audit_loss_today(guild_id, target.id)
+        from core.economy import AUDIT_DAILY_IMMUNE_PCT
+        day_cap = int((tgt_bal + already) * AUDIT_DAILY_IMMUNE_PCT)
+        room = max(0, day_cap - already)
+        steal = min(int(tgt_bal * pct), room if room > 0 else int(tgt_bal * pct), tgt_bal)
+        if steal <= 0:
+            return False, embeds.error_embed(f"{target.mention} is protected from more audits today.")
+
         await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
         await db.commit()
-        stolen = await shop.apply_tax_audit(
-            guild_id, user.id, target.id,
-            pct=builtin.get("steal_pct", 0.05), cap=builtin.get("steal_cap", 5000),
-        )
-        if stolen <= 0:
-            return True, embeds.used_embed(
-                f"{builtin['icon']} {builtin['name']}",
-                f"{target.mention} had nothing worth taking.")
+        await shop.sob_repo.adjust_received(guild_id, target.id, -steal)
+        await shop.sob_repo.adjust_received(guild_id, user.id, +steal)
+        await eco.log_audit(guild_id, user.id, target.id, steal)
+
+        extra = " 💥 **CRIT — smashed their shield!**" if crit else ""
         return True, embeds.used_embed(
             f"{builtin['icon']} {builtin['name']}",
-            f"{user.mention} audited {target.mention} and seized **{stolen:,} sobs**!")
+            f"{user.mention} audited {target.mention} and seized **{steal:,} sobs**!{extra}")
 
     # ---- targeted, duration-based debuffs (freeze, slow, marked, jail) ----
     if is_targeted:
@@ -101,25 +151,41 @@ async def do_use(shop, guild_id, user, item_key, target=None):
             return False, embeds.error_embed(f"{target.mention} already has that effect active.")
         await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
         await db.commit()
-        await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id, expires_at=expires_at)
+        await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id, expires_at=now_ts() + duration)
         verbs = {
             "block_tokens": f"froze {target.mention} — no snitching",
             "halve_earnings": f"cursed {target.mention} — half sob earnings",
             "mark_bounty": f"marked {target.mention} — snitching them pays more",
             "lock_items": f"jailed {target.mention} — no items",
         }
-        verb = verbs.get(mechanic, f"hit {target.mention}")
         return True, embeds.used_embed(
             f"{builtin['icon']} {builtin['name']} used",
-            f"{user.mention} {verb} for {_dur_text(duration)}.")
+            f"{user.mention} {verbs.get(mechanic, f'hit {target.mention}')} for {_dur_text(duration)}.")
 
-    # ---- self effects (shields, boosts, buffs) ----
+    # ---- STACKABLE shield: !use shield <seconds> ----
+    if builtin.get("stackable"):
+        secs = max(1, int(amount))
+        if secs > owned:
+            return False, embeds.error_embed(
+                f"You only have **{owned}** {builtin['name']} units. Buy more or use fewer.")
+        await shop._take_from_inventory(db, guild_id, user.id, key, secs, now_ts())
+        # extend existing shield if active, else start fresh
+        cur_exp = await shop.effect_expiry(guild_id, user.id, effect_key)
+        base = max(cur_exp, now_ts())
+        await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=base + secs)
+        await db.commit()
+        return True, embeds.used_embed(
+            f"{builtin['icon']} {builtin['name']} active",
+            f"You're protected from snitches for **{_dur_text(secs)}** ({secs} units used).")
+
+    # ---- self effects (guardian, reflect, boosts, buffs) ----
     if effect_key and await shop.has_effect(guild_id, user.id, effect_key):
-        return False, embeds.error_embed(f"You already have that effect active.")
+        return False, embeds.error_embed("You already have that effect active.")
     await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
     await db.commit()
+    expires_at = now_ts() + duration if duration else 0
     await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=expires_at)
-    if mechanic == "block_snitch" or mechanic == "block_charges":
+    if mechanic in ("block_snitch", "block_charges"):
         msg = "You're protected from snitches"
     elif mechanic == "reflect_next":
         msg = "Your next attacker gets reflected"
@@ -400,18 +466,25 @@ class ShopCog(commands.Cog):
         target = ctx.message.mentions[0] if ctx.message.mentions else None
         name = args
         if target is not None:
-            # strip the mention token(s) out of the name text
             for token in (f"<@{target.id}>", f"<@!{target.id}>"):
                 name = name.replace(token, "")
         name = name.strip()
+
+        # A trailing number is an amount (e.g. "shield 300" -> 300 seconds).
+        amount = 1
+        parts = name.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            amount = int(parts[1])
+            name = parts[0].strip()
+
         if not name:
-            await ctx.reply(embed=embeds.error_embed(f"Which item? e.g. `{ctx.prefix}use shield`."))
+            await ctx.reply(embed=embeds.error_embed(f"Which item? e.g. `{ctx.prefix}use shield 300`."))
             return
 
-        # resolve to a canonical key via the catalog (accepts name or key)
         item = await self.shop.get_item(ctx.guild.id, name)
         key = item["key"] if item else name
-        result, emb = await do_use(self.shop, ctx.guild.id, ctx.author, key, target)
+        result, emb = await do_use(self.shop, ctx.guild.id, ctx.author, key, target,
+                                   amount=amount, economy=self.economy)
 
         # custom server item claim -> notify channel/role or DM the buyer
         if result == "claim":

@@ -66,30 +66,45 @@ def make_economy_card(data: dict) -> Image.Image:
     d.text((gx + 20, gy + 14), "SUPPLY TREND", font=f_label(16), fill=DIM)
 
     points = data.get("points", []) or []
+    labels = data.get("labels", []) or []
     if len(points) >= 2:
         pmin, pmax = min(points), max(points)
         rng = (pmax - pmin) or 1
         plot = []
         innerx, innery = gx + 30, gy + 50
-        innerw, innerh = gw - 60, gh - 80
+        innerw, innerh = gw - 60, gh - 95
         for i, p in enumerate(points):
             px = innerx + i * innerw / (len(points) - 1)
             py = innery + innerh - ((p - pmin) / rng) * innerh
             plot.append((px, py))
-        # area under line
         line_col = STATUS_COLOR.get(status, AMBER)
         for i in range(len(plot) - 1):
             d.line([plot[i], plot[i + 1]], fill=line_col, width=4)
         for p in plot:
             d.ellipse([p[0] - 3, p[1] - 3, p[0] + 3, p[1] + 3], fill=line_col)
-        # pct label
+        # time/date labels: first, middle, last
+        import datetime as _dt
+        def _fmt_slot(s):
+            try:
+                ts = int(s)
+                return _dt.datetime.utcfromtimestamp(ts).strftime("%m/%d %H:%M")
+            except (ValueError, TypeError):
+                return str(s)[:10]
+        if labels:
+            picks = [0, len(labels) // 2, len(labels) - 1]
+            for idx in picks:
+                if 0 <= idx < len(labels):
+                    lx = innerx + idx * innerw / (len(points) - 1)
+                    lbl = _fmt_slot(labels[idx])
+                    tw = _text_w(d, lbl, f_label(12))
+                    d.text((min(max(lx - tw / 2, gx + 8), gx + gw - tw - 8), gy + gh - 26),
+                           lbl, font=f_label(12), fill=DIM)
         if status != "new":
             pct = data.get("pct", 0.0)
             lbl = f"{pct:+.0f}%"
-            d.text((gx + gw - _text_w(d, lbl, f_label(18)) - 20, gy + gh - 26),
+            d.text((gx + gw - _text_w(d, lbl, f_label(18)) - 20, gy + 16),
                    lbl, font=f_label(18), fill=line_col)
     else:
-        # not enough points yet — clear message, no broken graph
         msg = "Collecting data — the trend line appears after a few snapshots."
         d.text((gx + 30, gy + gh / 2 - 10), msg, font=f_reg(18), fill=DIM)
 

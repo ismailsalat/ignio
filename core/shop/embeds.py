@@ -131,10 +131,15 @@ def my_stuff_embed(member: discord.Member, inventory: dict[str, int], effects: l
     name_by_key = {it["key"]: it for it in catalog}
 
     if inventory:
+        from core.shop.catalog import BUILTIN_ITEMS
         lines = []
         for key, qty in inventory.items():
             it = name_by_key.get(key, {"icon": item_icon(key), "name": key})
-            lines.append(f"{it['icon']} **{it['name']}** ×{qty}")
+            base = BUILTIN_ITEMS.get(key, {})
+            if base.get("stackable"):
+                lines.append(f"{it['icon']} **{it['name']}** — {qty} sec of protection")
+            else:
+                lines.append(f"{it['icon']} **{it['name']}** ×{qty}")
         e.add_field(name="Inventory", value="\n".join(lines), inline=False)
     else:
         e.add_field(name="Inventory", value="Empty — visit `!shop`.", inline=False)

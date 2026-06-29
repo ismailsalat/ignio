@@ -20,12 +20,30 @@ REF_KEY = "economy:ref_cached"
 DEFAULT_TAX_PCT = 30        # % of a built-in purchase that is burned
 
 # Item tier multipliers — price = reference_balance * tier (auto-scales per server).
+# Power-weighted: stronger items cost more. Shield is per-second (tiny base).
 ITEM_TIERS = {
-    "shield": 0.4, "shield_plus": 1.2, "fortress": 3.0, "guardian": 8.0, "reflect": 50.0,
-    "freeze": 0.5, "freeze_deep": 1.7, "tax_audit": 6.0, "slow_curse": 8.0, "marked": 16.0, "jail": 65.0,
+    "shield": 0.02,        # per SECOND of protection (stackable)
+    "guardian": 8.0, "audit_ward": 4.0, "reflect": 50.0,
+    "freeze": 0.5, "freeze_deep": 1.7,
+    "audit": 1.2, "heist": 45.0,
+    "slow_curse": 8.0, "marked": 16.0, "jail": 65.0,
     "boost": 0.3, "boost_adv": 1.2, "hunter": 2.5, "lucky": 4.0, "king": 80.0,
 }
 REF_FLOOR = 50              # reference never below this (new-server safety)
+
+# --- Earning formulas (tuned against real /plat data, economy stays ~flat) ---
+SOB_VALUE_PCT = 0.03       # a sob reaction is worth ~3% of reference...
+SOB_VALUE_FLOOR = 3        # ...but never less than 3 (so sobs always matter)
+SNITCH_REWARD_PCT = 0.06   # snitch base reward ~6% of reference
+SNITCH_REWARD_FLOOR = 6
+SNITCH_STEAL_PCT = 0.50    # steal 50% of the wiped sobs (×boost if active)
+SNITCH_TAX_PCT = 10        # % of snitch winnings -> treasury
+
+# --- Audit (two-tier, anti-gang-up) ---
+AUDIT_BASIC_PCT = 0.03     # basic audit steals 3% of target
+AUDIT_HEIST_PCT = 0.08     # grand heist steals 8%
+AUDIT_HEIST_CRIT = 0.20    # 20% chance heist pierces & breaks a shield
+AUDIT_DAILY_IMMUNE_PCT = 0.15  # once you've lost 15% of balance to audits today, immune
 
 
 def _today() -> str:
@@ -114,11 +132,54 @@ class Economy:
         if tier is None:
             return None
         ref = await self.reference_balance(guild_id)
-        return max(10, int(round(ref * tier / 10) * 10))
+        raw = ref * tier
+        if raw < 20:
+            return max(1, int(round(raw)))
+        return max(10, int(round(raw / 10) * 10))
 
     async def all_item_prices(self, guild_id: int) -> dict:
         ref = await self.reference_balance(guild_id)
-        return {k: max(10, int(round(ref * t / 10) * 10)) for k, t in ITEM_TIERS.items()}
+        out = {}
+        for k, t in ITEM_TIERS.items():
+            raw = ref * t
+            out[k] = max(1, int(round(raw))) if raw < 20 else max(10, int(round(raw / 10) * 10))
+        return out
+
+    async def audit_loss_today(self, guild_id: int, target_id: int) -> int:
+        """How many sobs the target has lost to audits today (UTC)."""
+        db = await self._db()
+        row = await db.fetchone(
+            "SELECT COALESCE(SUM(amount),0) AS s FROM audit_events "
+            "WHERE guild_id=? AND target_id=? AND day=?",
+            (guild_id, target_id, _today()),
+        )
+        return int(row["s"])
+
+    async def is_audit_immune(self, guild_id: int, target_id: int, target_balance: int) -> bool:
+        """True if the target has already lost >=15% of their balance to audits today."""
+        lost = await self.audit_loss_today(guild_id, target_id)
+        cap = int((target_balance + lost) * AUDIT_DAILY_IMMUNE_PCT)
+        return lost >= cap and cap > 0
+
+    async def log_audit(self, guild_id: int, auditor_id: int, target_id: int, amount: int) -> None:
+        db = await self._db()
+        await db.execute(
+            "INSERT INTO audit_events (guild_id, target_id, auditor_id, amount, day, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (guild_id, target_id, auditor_id, int(amount), _today(), int(time.time())),
+        )
+        await db.commit()
+
+    async def sob_value(self, guild_id: int) -> int:
+        """How many sobs a single reaction is worth (before the multiplier).
+        Floor-based so sobs always matter, scales up on richer servers."""
+        ref = await self.reference_balance(guild_id)
+        return max(SOB_VALUE_FLOOR, int(ref * SOB_VALUE_PCT))
+
+    async def snitch_reward(self, guild_id: int) -> int:
+        """Base reward for a successful snitch (before steal)."""
+        ref = await self.reference_balance(guild_id)
+        return max(SNITCH_REWARD_FLOOR, int(ref * SNITCH_REWARD_PCT))
 
     async def get_sob_multiplier(self, guild_id: int) -> float:
         """How many sobs each reaction/snitch is worth. Default ON: auto from
@@ -316,19 +377,25 @@ class Economy:
                 for r in reversed(rows)]
 
     async def inflation_signal(self, guild_id: int) -> dict:
-        """Compare oldest vs newest snapshot to flag inflation.
-        For a brand-new server with <2 points, returns 'new' (not an error)."""
-        hist = await self.supply_history(guild_id, 24)
-        if len(hist) < 2:
-            # New/starting server: no trend yet, but not broken — show current.
-            cur = hist[0]["total"] if hist else (await self.total_supply(guild_id))[0]
-            return {"status": "new", "pct": 0.0, "points": [cur]}
-        first, last = hist[0]["total"], hist[-1]["total"]
-        pct = ((last - first) / first * 100) if first else 0.0
-        if pct <= 5:
+        """Inflation = RECENT rate of change (last ~day of snapshots vs the day
+        before), NOT growth from the first-ever snapshot. A one-time event no
+        longer reads as permanent inflation."""
+        hist = await self.supply_history(guild_id, 48)   # ~last day at 30-min slots
+        if len(hist) < 4:
+            cur = hist[-1]["total"] if hist else (await self.total_supply(guild_id))[0]
+            return {"status": "new", "pct": 0.0, "points": [h["total"] for h in hist] or [cur],
+                    "labels": [h.get("slot", "") for h in hist]}
+        # compare the average of the most recent quarter vs the prior quarter
+        q = max(1, len(hist) // 4)
+        recent = sum(h["total"] for h in hist[-q:]) / q
+        prior = sum(h["total"] for h in hist[-2 * q:-q]) / q
+        pct = ((recent - prior) / prior * 100) if prior else 0.0
+        if pct <= 3:
             status = "green"
-        elif pct <= 25:
+        elif pct <= 12:
             status = "yellow"
         else:
             status = "red"
-        return {"status": status, "pct": pct, "points": [h["total"] for h in hist]}
+        return {"status": status, "pct": pct,
+                "points": [h["total"] for h in hist],
+                "labels": [h.get("slot", "") for h in hist]}

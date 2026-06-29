@@ -45,7 +45,7 @@ COMMANDS = [
     {"name": "daily", "cat": "shop", "desc": "Claim your daily sobs (streak bonus!)", "usage": "daily"},
     {"name": "buy", "cat": "shop", "desc": "Buy an item by name or key", "usage": "buy <item> [qty]"},
     {"name": "me", "cat": "shop", "desc": "Your items + active effects", "usage": "me"},
-    {"name": "use", "cat": "shop", "desc": "Use an item", "usage": "use <item> [@user]"},
+    {"name": "use", "cat": "shop", "desc": "Use an item (shields: !use shield <seconds>)", "usage": "use <item> [amount] [@user]"},
 
     # ---- Economy ----
     {"name": "rate", "cat": "economy", "desc": "Show this server's sob⇄$ rate", "usage": "rate"},

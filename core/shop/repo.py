@@ -268,6 +268,25 @@ class ShopRepo:
                 return True
         return False
 
+    async def effect_expiry(self, guild_id: int, user_id: int, effect_key: str) -> int:
+        """Latest expiry timestamp for an active effect (0 if none). Used to
+        extend a stacking shield instead of replacing it."""
+        best = 0
+        for e in await self.get_effects(guild_id, user_id):
+            if e["effect_key"] == effect_key:
+                best = max(best, int(e.get("expires_at", 0) or 0))
+        return best
+
+    async def clear_effect(self, guild_id: int, user_id: int, effect_key: str) -> bool:
+        """Remove all instances of an effect (e.g. a shield smashed by a crit)."""
+        db = await self._db()
+        await db.execute(
+            "DELETE FROM active_effects WHERE guild_id = ? AND target_user_id = ? AND effect_key = ?",
+            (guild_id, user_id, effect_key),
+        )
+        await db.commit()
+        return True
+
     async def consume_effect(self, guild_id: int, user_id: int, effect_key: str) -> bool:
         """Remove one instance of a one-shot effect (e.g. shield). Returns True if consumed."""
         db = await self._db()

@@ -69,13 +69,14 @@ class SobCog(commands.Cog):
             snitch_threshold=threshold,
         )
 
-        # Sob multiplier: base add_sob gives 1; if the server's multiplier is >1,
-        # credit the extra. <1 isn't applied to a single reaction (can't give
-        # fractional sobs), so the multiplier floors at giving the base 1.
+        # Sob value: each reaction is worth a scaled amount (not just 1), times
+        # the server multiplier. base add_sob credits 1; we add the rest here.
         if added and self.economy is not None:
             try:
+                value = await self.economy.sob_value(payload.guild_id)
                 mult = await self.economy.get_sob_multiplier(payload.guild_id)
-                extra = int(round(mult)) - 1
+                total = max(1, int(round(value * mult)))
+                extra = total - 1   # base add_sob already gave 1
                 if extra > 0:
                     await self.sob_repo.adjust_received(payload.guild_id, target_id, extra)
             except Exception:
@@ -289,7 +290,8 @@ class SobCog(commands.Cog):
                 return
 
             if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "shield"):
-                # target is shielded: block the snitch AND consume the snitcher's token
+                # target is shielded (time-based): block the snitch and consume the
+                # snitcher's token. The shield STAYS up until its time expires.
                 snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
                 if snitch_row and snitch_row["token_available"] == 1:
                     db = await self.sob_repo._db()
@@ -298,9 +300,8 @@ class SobCog(commands.Cog):
                         (now, guild.id, user.id),
                     )
                     await db.commit()
-                    await self.shop_repo.consume_effect(guild.id, target_msg.author.id, "shield")
                     await ctx.reply(
-                        f"🛡️ {target_msg.author.mention} was **shielded** — your snitch was blocked and your token is gone.",
+                        f"🛡️ {target_msg.author.mention} is **shielded** — your snitch was blocked and your token is gone.",
                         mention_author=False,
                     )
                 else:
@@ -317,23 +318,42 @@ class SobCog(commands.Cog):
 
         if success:
             threshold = await self.sob_repo.get_snitch_threshold(guild.id)
+            target_uid = target_msg.author.id
 
-            # Boost family: if the snitcher has any boost-type effect active,
-            # steal (removed × that item's multiplier), capped by target balance.
-            boosted_amount = 0
-            if self.shop_repo is not None:
-                from core.shop.catalog import BUILTIN_ITEMS
-                active_mult = None
-                for ik, it in BUILTIN_ITEMS.items():
-                    if it.get("mechanic", "").startswith("steal_mult"):
-                        eff = it.get("effect_key") or ik
-                        if await self.shop_repo.has_effect(guild.id, user.id, eff):
-                            m = float(it.get("multiplier", 1.5))
-                            active_mult = max(active_mult or 0, m)
-                if active_mult is not None:
-                    boosted_amount = await self.shop_repo.apply_boost_steal(
-                        guild.id, user.id, target_msg.author.id, removed, multiplier=active_mult,
-                    )
+            # --- Snitch reward + steal + tax (the competitive engine) ---
+            reward = 0
+            stolen = 0
+            snitch_tax = 0
+            if self.economy is not None:
+                try:
+                    from core.economy import SNITCH_STEAL_PCT, SNITCH_TAX_PCT
+                    reward = await self.economy.snitch_reward(guild.id)
+
+                    # boost multiplier (if any boost effect active)
+                    boost_mult = 1.0
+                    if self.shop_repo is not None:
+                        from core.shop.catalog import BUILTIN_ITEMS
+                        for ik, it in BUILTIN_ITEMS.items():
+                            if it.get("mechanic", "").startswith("steal_mult"):
+                                eff = it.get("effect_key") or ik
+                                if await self.shop_repo.has_effect(guild.id, user.id, eff):
+                                    boost_mult = max(boost_mult, float(it.get("multiplier", 1.5)))
+
+                    # steal 50% of wiped (×boost), capped at target's balance
+                    tgt_stats = await self.sob_repo.get_user_stats(guild.id, target_uid)
+                    tgt_bal = int(tgt_stats["sobs_alltime"])
+                    stolen = min(int(removed * SNITCH_STEAL_PCT * boost_mult), tgt_bal)
+                    if stolen > 0:
+                        await self.sob_repo.adjust_received(guild.id, target_uid, -stolen)
+
+                    gross = reward + stolen
+                    snitch_tax = int(gross * SNITCH_TAX_PCT / 100)
+                    net = gross - snitch_tax
+                    await self.sob_repo.adjust_received(guild.id, user.id, net)
+                    if snitch_tax > 0:
+                        await self.economy.add_treasury(guild.id, snitch_tax, payer_id=user.id)
+                except Exception as e:
+                    print(f"[Ignio][Snitch] reward/steal failed: {e}")
 
             snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
             stats = await self.sob_repo.get_user_stats(guild.id, user.id)
@@ -344,10 +364,16 @@ class SobCog(commands.Cog):
                 snitcher=user, target=target_msg.author,
                 sobs_removed=removed, sobs_left_until_next=left, threshold=threshold,
             )
-            if boosted_amount > 0:
+            gained = reward + stolen - snitch_tax
+            if gained > 0:
+                parts = [f"+{reward} reward"]
+                if stolen > 0:
+                    parts.append(f"+{stolen} stolen")
+                if snitch_tax > 0:
+                    parts.append(f"−{snitch_tax} tax")
                 embed.add_field(
-                    name="⚡ Boost",
-                    value=f"You stole **{boosted_amount}** sobs from {target_msg.author.mention}!",
+                    name="😈 Snitch payout",
+                    value=f"**+{gained} sobs** ({', '.join(parts)})",
                     inline=False,
                 )
             await ctx.reply(embed=embed, mention_author=False)

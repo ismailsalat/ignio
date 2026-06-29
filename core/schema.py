@@ -297,6 +297,21 @@ CREATE TABLE IF NOT EXISTS tax_events (
 CREATE INDEX IF NOT EXISTS idx_tax_events_guild ON tax_events(guild_id, created_at);
 """
 
+
+# Audit log: tracks audit steals per target per day for anti-gang-up immunity,
+# and feeds the upgraded export. Additive.
+_AUDIT_LOG = """
+CREATE TABLE IF NOT EXISTS audit_events (
+    guild_id   INTEGER NOT NULL,
+    target_id  INTEGER NOT NULL,
+    auditor_id INTEGER NOT NULL,
+    amount     INTEGER NOT NULL,
+    day        TEXT    NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_target_day ON audit_events(guild_id, target_id, day);
+"""
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -305,6 +320,7 @@ MIGRATIONS = [
     (204, "economy_snapshots", _ECONOMY),
     (205, "daily_claims", _DAILY),
     (206, "tax_events", _TAX_LOG),
+    (207, "audit_events", _AUDIT_LOG),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

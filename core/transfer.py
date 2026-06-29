@@ -41,17 +41,23 @@ from core.db import Database
 EXPORT_VERSION = 1
 
 # Tables that hold per-guild sob data, all keyed by guild_id.
-_GUILD_TABLES = ("sob_users", "sob_events", "sob_periods", "guild_settings")
+_GUILD_TABLES = ("sob_users", "sob_events", "sob_periods", "guild_settings",
+                 "economy_snapshots", "daily_claims", "tax_events", "audit_events",
+                 "shop_items", "shop_inventory", "active_effects")
 
 
 async def export_guild(db: Database, guild_id: int) -> dict[str, Any]:
     """Return a JSON-serializable dict containing all sob data for one guild."""
     tables: dict[str, list[dict[str, Any]]] = {}
     for table in _GUILD_TABLES:
-        rows = await db.fetchall(
-            f"SELECT * FROM {table} WHERE guild_id = ?", (guild_id,)
-        )
-        tables[table] = [dict(r) for r in rows]
+        try:
+            rows = await db.fetchall(
+                f"SELECT * FROM {table} WHERE guild_id = ?", (guild_id,)
+            )
+            tables[table] = [dict(r) for r in rows]
+        except Exception:
+            # table may not exist yet on older DBs — skip gracefully
+            tables[table] = []
 
     return {
         "ignio_export_version": EXPORT_VERSION,

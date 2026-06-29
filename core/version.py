@@ -8,12 +8,28 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "0.8.2"
+VERSION = "0.9.0"
 RELEASED = "2026-06-28"        # date of this version (YYYY-MM-DD)
-CODENAME = "Treasury Update"
+CODENAME = "Competitive Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "0.9.0",
+        "date": "2026-06-28",
+        "title": "Competitive Update",
+        "notes": [
+            "Snitching is now the main way to earn: reward + steal, scaled to economy",
+            "Sobs are worth real value now (not just 1) — worth protecting",
+            "Tax Audit reworked: Basic (blockable) + Grand Heist (crits through shields)",
+            "Anti-gang-up: heavy audit losses make you immune for the day",
+            "Shields are now per-second — buy in bulk, !use shield <seconds>",
+            "Rich players are at real risk — must spend to stay protected",
+            "Every item rebalanced & auto-priced by power and economy",
+            "Fixed !eco inflation graph (recent change, not lifetime) + dates",
+            "!admin export now includes all economy data for tuning",
+        ],
+    },
     {
         "version": "0.8.2",
         "date": "2026-06-28",

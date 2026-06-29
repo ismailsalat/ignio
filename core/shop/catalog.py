@@ -22,26 +22,24 @@ DEFAULT_BOOST_MULTIPLIER = 2
 
 BUILTIN_ITEMS: dict[str, dict] = {
     # ====================== PROTECTION ======================
+    # Shield is now a STACKABLE per-second item: buy in bulk, choose how many
+    # seconds to apply on use. Rich players need long protection -> buy more.
     "shield": {
-        "key": "shield", "name": "Basic Shield", "icon": "🛡️", "category": "protection",
-        "price": 120, "duration": 5 * MIN, "effect_key": "shield", "mechanic": "block_snitch",
-        "description": "Protects you from snitches for 5 minutes.",
-    },
-    "shield_plus": {
-        "key": "shield_plus", "name": "Reinforced Shield", "icon": "🛡️", "category": "protection",
-        "price": 350, "duration": 15 * MIN, "effect_key": "shield", "mechanic": "block_snitch",
-        "description": "Protects you from snitches for 15 minutes.",
-    },
-    "fortress": {
-        "key": "fortress", "name": "Iron Fortress", "icon": "🏰", "category": "protection",
-        "price": 900, "duration": 30 * MIN, "effect_key": "shield", "mechanic": "block_snitch",
-        "description": "Protects you from snitches for 30 minutes.",
+        "key": "shield", "name": "Shield", "icon": "🛡️", "category": "protection",
+        "price": 2, "duration": 1, "effect_key": "shield", "mechanic": "block_snitch",
+        "stackable": True,
+        "description": "1 second of snitch protection. Buy in bulk, then `!use shield <seconds>`.",
     },
     "guardian": {
         "key": "guardian", "name": "Guardian Angel", "icon": "😇", "category": "protection",
         "price": 2500, "duration": 0, "effect_key": "guardian", "mechanic": "block_charges",
         "charges": 5,
         "description": "Blocks the next 5 snitches against you (no time limit).",
+    },
+    "audit_ward": {
+        "key": "audit_ward", "name": "Audit Ward", "icon": "🧾", "category": "protection",
+        "price": 1500, "duration": 1800, "effect_key": "audit_ward", "mechanic": "block_audit",
+        "description": "Blocks Basic Audits against you for 30 minutes.",
     },
     "reflect": {
         "key": "reflect", "name": "Reflect Shield", "icon": "🪞", "category": "protection",
@@ -61,11 +59,15 @@ BUILTIN_ITEMS: dict[str, dict] = {
         "price": 500, "duration": 15 * MIN, "effect_key": "freeze", "mechanic": "block_tokens",
         "description": "Stops a rival from using snitch tokens for 15 minutes.",
     },
-    "tax_audit": {
-        "key": "tax_audit", "name": "Tax Audit", "icon": "💸", "category": "debuff",
-        "price": 2000, "duration": 0, "effect_key": "", "mechanic": "instant_steal_pct",
-        "steal_pct": 0.05, "steal_cap": 5000,
-        "description": "Instantly steal 5% of the target's sobs (capped). You keep them.",
+    "audit": {
+        "key": "audit", "name": "Basic Audit", "icon": "💸", "category": "debuff",
+        "price": 400, "duration": 0, "effect_key": "", "mechanic": "audit_basic",
+        "description": "Steal 3% of a target's sobs (blockable by shields & wards, daily-capped).",
+    },
+    "heist": {
+        "key": "heist", "name": "Grand Heist", "icon": "🏴‍☠️", "category": "debuff",
+        "price": 16000, "duration": 0, "effect_key": "", "mechanic": "audit_heist",
+        "description": "Steal 8% of a target's sobs. 20% chance to smash through their shield.",
     },
     "slow_curse": {
         "key": "slow_curse", "name": "Slow Curse", "icon": "🦥", "category": "debuff",
@@ -76,7 +78,7 @@ BUILTIN_ITEMS: dict[str, dict] = {
         "key": "marked", "name": "Marked Target", "icon": "🎯", "category": "debuff",
         "price": 5000, "duration": 30 * MIN, "effect_key": "marked", "mechanic": "mark_bounty",
         "bounty_pct": 0.20,
-        "description": "For 30 min, anyone who snitches this player gains 20% more sobs.",
+        "description": "For 30 min, anyone who snitches this player gains 20% more.",
     },
     "jail": {
         "key": "jail", "name": "Jail", "icon": "⛓️", "category": "debuff",
@@ -118,10 +120,10 @@ BUILTIN_ITEMS: dict[str, dict] = {
 }
 
 # Effects that target SOMEONE ELSE (used with !use <item> @target).
-TARGETED_EFFECTS = {"freeze", "freeze_deep", "tax_audit", "slow_curse", "marked", "jail"}
+TARGETED_EFFECTS = {"freeze", "freeze_deep", "audit", "heist", "slow_curse", "marked", "jail"}
 
 # Effects that are self-applied (used with !use <item>).
-SELF_EFFECTS = {"shield", "shield_plus", "fortress", "guardian", "reflect",
+SELF_EFFECTS = {"shield", "guardian", "audit_ward", "reflect",
                 "boost", "boost_adv", "hunter", "lucky", "king"}
 
 # Category display order + labels.
