@@ -8,12 +8,28 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.0.0"
-RELEASED = "2026-06-28"        # date of this version (YYYY-MM-DD)
-CODENAME = "Integrity Update"
+VERSION = "1.1.0"
+RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
+CODENAME = "Control Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.1.0",
+        "date": "2026-06-29",
+        "title": "Control Update (audit limits, stats, admin controls)",
+        "notes": [
+            "NEW !sob stats - a picture showing where your sobs come from + your audit allowance",
+            "Audit daily cap: each person can only audit a set number of times per day",
+            "Audit cooldown: a wait between a person's audits (stops one player draining everyone)",
+            "Get audited a lot? The bot nudges you (dismissible) to buy a Shield",
+            "Admins: !admin auditcap <n> and !admin auditcd <seconds> to tune audits",
+            "Admins: !admin shop on/off, !admin item disable/enable, !admin category disable/enable",
+            "Rewrote !guide into a clear, actionable how-to (real commands + how to protect yourself)",
+            "Every command now shows up in !help (admin help split into clean sections)",
+            "New limit/suggestion screens are pictures, not embeds - simple and clean",
+        ],
+    },
     {
         "version": "1.0.0",
         "date": "2026-06-28",
