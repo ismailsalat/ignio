@@ -8,12 +8,38 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "0.9.0"
+VERSION = "1.0.0"
 RELEASED = "2026-06-28"        # date of this version (YYYY-MM-DD)
-CODENAME = "Competitive Update"
+CODENAME = "Integrity Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.0.0",
+        "date": "2026-06-28",
+        "title": "Integrity Update (security + economy audit)",
+        "notes": [
+            "Fixed sob duplication: reactions store their exact credited value; "
+            "removal & snitch refund that exact amount (no more minting via toggles)",
+            "All economy actions are now atomic DB transactions (BEGIN IMMEDIATE) "
+            "with conditional updates — concurrent buy/use/daily/snitch can't double-spend",
+            "Inventory can never go negative; balances can never go below zero",
+            "Russian Roulette now uses real escrow — both wagers are locked, refunded "
+            "on timeout/decline/error/restart, and can't be spent mid-match",
+            "Hunter's Blessing, Guardian, Reflect, King, Marked, Slow & Lucky now "
+            "actually enforced; any unenforceable item is auto-disabled in the shop",
+            "Alt-block is real: configurable account-age/join-age/rate-limit and "
+            "reciprocal-farm detection, with a security log of every blocked reaction",
+            "NEW permanent append-only economy ledger — every sob earned/lost/spent/"
+            "transferred is recorded with full double-entry detail",
+            "NEW !admin audit @user <page> (ledger history), !admin audit tx <id> "
+            "(one transaction), !admin suspicious @user (exploit flags)",
+            "!admin export now includes the full ledger, security log, game escrow "
+            "history and a balance-vs-ledger reconciliation report",
+            "Treasury can't be double-spent; treasury/burn counters are race-safe",
+            "Every balance can be reconciled from the ledger going forward",
+        ],
+    },
     {
         "version": "0.9.0",
         "date": "2026-06-28",
