@@ -122,6 +122,18 @@ BUILTIN_ITEMS: dict[str, dict] = {
         "multiplier": 3.0,
         "description": "For 10 min, your snitches steal 3× and ignore shields (except Reflect).",
     },
+    # ---- Steal items (small odds nudges; risk-priced; 24h expiry) ----
+    "lockpick": {
+        "key": "lockpick", "name": "Lockpick", "icon": "🔓", "category": "steal",
+        "price": 50, "duration": 0, "effect_key": "", "mechanic": "steal_offense",
+        "charges": 1,
+        "description": "One !steal attempt gets +4% success. One use, expires in 24h. Use: `!steal @user lockpick`.",
+    },
+    "safelock": {
+        "key": "safelock", "name": "Safe Lock", "icon": "🔒", "category": "steal",
+        "price": 80, "duration": 20 * MIN, "effect_key": "safelock", "mechanic": "steal_defense",
+        "description": "For 20 min, steals against you are -5% likely. Doesn't block fully. `!use safelock`.",
+    },
 }
 
 # Effects that target SOMEONE ELSE (used with !use <item> @target).
@@ -129,7 +141,7 @@ TARGETED_EFFECTS = {"freeze", "freeze_deep", "audit", "heist", "slow_curse", "ma
 
 # Effects that are self-applied (used with !use <item>).
 SELF_EFFECTS = {"shield", "guardian", "audit_ward", "vault_ward", "reflect",
-                "boost", "boost_adv", "hunter", "lucky", "king"}
+                "boost", "boost_adv", "hunter", "lucky", "king", "safelock"}
 
 # Mechanics whose advertised effect is actually enforced in code. Any built-in
 # whose mechanic is NOT in this set is auto-disabled in the shop (see
@@ -152,6 +164,8 @@ ENFORCED_MECHANICS = {
     "steal_mult_charges", # hunter's blessing
     "earn_bonus",         # lucky day
     "steal_mult_pierce",  # king's decree
+    "steal_offense",      # lockpick (consumed by !steal, not !use)
+    "steal_defense",      # safe lock
 }
 
 # Category display order + labels.
@@ -159,6 +173,7 @@ CATEGORY_ORDER = [
     ("protection", "🛡️ Protection"),
     ("debuff", "❄️ Debuff"),
     ("buff", "⚡ Buff"),
+    ("steal", "🦝 Steal"),
     ("server", "🎁 Server Items"),
 ]
 
@@ -167,6 +182,7 @@ CATEGORIES = {
     "protection": ("🛡️", "Protection"),
     "debuff": ("❄️", "Debuff"),
     "buff": ("⚡", "Buff"),
+    "steal": ("🦝", "Steal"),
     "server": ("🎁", "Server Items"),
 }
 

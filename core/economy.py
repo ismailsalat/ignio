@@ -28,6 +28,7 @@ ITEM_TIERS = {
     "audit": 1.2, "heist": 45.0,
     "slow_curse": 8.0, "marked": 16.0, "jail": 65.0,
     "boost": 0.3, "boost_adv": 1.2, "hunter": 2.5, "lucky": 4.0, "king": 80.0,
+    "lockpick": 0.01, "safelock": 0.02,
 }
 REF_FLOOR = 50              # reference never below this (new-server safety)
 

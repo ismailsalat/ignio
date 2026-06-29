@@ -204,10 +204,11 @@ class ShopRepo:
         return {str(r["item_key"]): int(r["quantity"]) for r in rows}
 
     async def _add_to_inventory(self, db, guild_id: int, user_id: int, item_key: str, qty: int, ts: int) -> None:
-        # Protection items get a 24h expiry; everything else never expires (0).
+        # Protection AND steal items get a 24h expiry; everything else stays (0).
         from core.shop.catalog import BUILTIN_ITEMS
-        is_protection = (BUILTIN_ITEMS.get(item_key, {}).get("category") == "protection")
-        expires = (ts + self.PROTECTION_INV_TTL) if is_protection else 0
+        _cat = BUILTIN_ITEMS.get(item_key, {}).get("category")
+        is_expiring = _cat in ("protection", "steal")
+        expires = (ts + self.PROTECTION_INV_TTL) if is_expiring else 0
         await db.execute(
             """
             INSERT INTO shop_inventory (guild_id, user_id, item_key, quantity, updated_at, expires_at)

@@ -130,6 +130,11 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
     if await shop.has_effect(guild_id, user.id, "jail"):
         return False, embeds.error_embed("You're jailed — you can't use items right now.")
 
+    # Lockpick isn't used via !use — it's spent by the !steal command.
+    if mechanic == "steal_offense":
+        return False, embeds.error_embed(
+            "A Lockpick is used with the steal command, like `!steal @user lockpick` — not `!use`.")
+
     # ---- AUDIT (basic + heist): instant steal, blockable, crit, daily cap ----
     if mechanic in ("audit_basic", "audit_heist"):
         if target is None:
