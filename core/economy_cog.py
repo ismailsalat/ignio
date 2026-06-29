@@ -44,6 +44,16 @@ class EconomyCog(commands.Cog):
                 if last != today:
                     await self.eco.recompute_reference(guild.id)
                     await self.eco.repo.set_guild_setting(guild.id, "economy:last_rebalance", today)
+                    # gently auto-balance protection prices from real behaviour
+                    try:
+                        from core.protection import Protection
+                        prot = Protection(self.eco, self.eco.repo)
+                        res = await prot.auto_balance(guild.id)
+                        if res["reason"] != "stable":
+                            print(f"[Ignio][Protection] {guild.id}: factor "
+                                  f"{res['factor_before']}→{res['factor_after']} ({res['reason']})")
+                    except Exception as e:
+                        print(f"[Ignio][Protection] auto-balance failed for {guild.id}: {e}")
             except Exception as e:
                 print(f"[Ignio][Economy] snapshot/rebalance failed for {guild.id}: {e}")
 

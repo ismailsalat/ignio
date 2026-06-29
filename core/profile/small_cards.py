@@ -278,15 +278,19 @@ def shield_suggest_card(lost_today: int, shield_price: int | None = None) -> Ima
 # Stats card — !sob stats. Shows where YOUR sobs come from + costs/cooldowns.
 # ----------------------------------------------------------------------
 def stats_card(name: str, balance: int, earned: dict, spent: dict,
-               rates: dict, cooldowns: dict) -> Image.Image:
+               rates: dict, cooldowns: dict, protection: dict | None = None) -> Image.Image:
     """
     earned: {'reactions':int,'snitch':int,'audit':int,'daily':int,'games':int}
     spent:  {'shop':int,'tax':int,'audits':int,'games':int}
     rates:  {'sob_value':int,'snitch_steal_pct':int,'audit_basic_pct':float,
              'audit_heist_pct':float,'audit_cap':int}
     cooldowns: {'audit_left':int,'audits_left':int}
+    protection (optional): {'basic':int,'heist':int,'lost_today':int,'day_cap':int,
+                            'ward_price':int,'vault_price':int,'shield30_price':int,'show':bool}
     """
-    W, H = 760, 580
+    show_prot = bool(protection and protection.get("show"))
+    W = 760
+    H = 620 if show_prot else 580
     img, d = _base(W, H)
     PAD = 40
 
@@ -331,18 +335,43 @@ def stats_card(name: str, balance: int, earned: dict, spent: dict,
     dy = 358
     d.line([(PAD, dy), (W - PAD, dy)], fill=PANEL, width=2)
 
-    # "HOW EARNING WORKS" quick reference
-    d.text((PAD, dy + 16), "HOW EARNING WORKS", font=f_label(15), fill=SOFT)
-    ref = [
-        f"Each reaction is worth ~{_fmt(rates.get('sob_value',1))} sobs",
-        f"Snitch steals {rates.get('snitch_steal_pct',50)}% of wiped sobs",
-        f"Audit Basic {int(rates.get('audit_basic_pct',0.03)*100)}% · Heist {int(rates.get('audit_heist_pct',0.08)*100)}% of a target",
-    ]
-    y = dy + 46
-    for line in ref:
-        d.ellipse([PAD + 2, y + 8, PAD + 12, y + 18], fill=SOFT)
-        d.text((PAD + 26, y), line, font=f_reg(18), fill=INK)
-        y += 32
+    # "HOW EARNING WORKS" quick reference — shown only when there's room
+    # (i.e. when the protection risk panel isn't taking the lower half).
+    if not show_prot:
+        d.text((PAD, dy + 16), "HOW EARNING WORKS", font=f_label(15), fill=SOFT)
+        ref = [
+            f"Each reaction is worth ~{_fmt(rates.get('sob_value',1))} sobs",
+            f"Snitch steals {rates.get('snitch_steal_pct',50)}% of wiped sobs",
+            f"Audit Basic {int(rates.get('audit_basic_pct',0.03)*100)}% · Heist {int(rates.get('audit_heist_pct',0.08)*100)}% of a target",
+        ]
+        y = dy + 46
+        for line in ref:
+            d.ellipse([PAD + 2, y + 8, PAD + 12, y + 18], fill=SOFT)
+            d.text((PAD + 26, y), line, font=f_reg(18), fill=INK)
+            y += 32
+
+    # YOUR PROTECTION RISK (only when worth showing) — sits just under the divider
+    if show_prot:
+        py = dy + 18
+        d.text((PAD, py), "YOUR PROTECTION RISK", font=f_label(15), fill=RED)
+        py += 30
+        basic = int(protection.get("basic", 0))
+        heist = int(protection.get("heist", 0))
+        lost = int(protection.get("lost_today", 0))
+        cap = int(protection.get("day_cap", 0))
+        ward = protection.get("ward_price")
+        vault = protection.get("vault_price")
+        sh30 = protection.get("shield30_price")
+        d.text((PAD, py), f"Next Basic Audit can take up to {_fmt(basic)}", font=f_reg(18), fill=INK); py += 28
+        d.text((PAD, py), f"Next Grand Heist can take up to {_fmt(heist)}", font=f_reg(18), fill=INK); py += 28
+        d.text((PAD, py), f"Audit loss today: {_fmt(lost)} / {_fmt(cap)}", font=f_reg(18), fill=DIM); py += 34
+        # recommendation pill — cheaper than the damage, so it's the smart buy
+        rec = []
+        if ward is not None: rec.append(f"Audit Ward {_fmt(ward)}")
+        if vault is not None: rec.append(f"Vault Ward {_fmt(vault)}")
+        if sh30 is not None: rec.append(f"Shield/30m {_fmt(sh30)}")
+        d.rounded_rectangle([PAD, py, W - PAD, py + 46], radius=14, fill=PANEL)
+        d.text((PAD + 16, py + 12), "Buy: " + "  ·  ".join(rec), font=f_num(18), fill=GREEN)
 
     # your audit allowance pill
     by = H - 70

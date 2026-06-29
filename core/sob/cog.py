@@ -401,8 +401,25 @@ class SobCog(commands.Cog):
                 cds["audits_left"] = max(0, cap - done)
                 cds["audit_left"] = await self.economy.audit_cooldown_left(gid, uid)
 
+            # Protection risk: only show when the player has enough at stake for
+            # the loss to matter, OR they've been audited recently. Keeps the
+            # card simple for tiny/new players.
+            protection = None
+            prot = getattr(self.shop_repo, "protection", None) if self.shop_repo else None
+            if prot is not None:
+                try:
+                    ro = await prot.risk_readout(gid, uid)
+                    matters = ro["basic"] >= 25 or ro["lost_today"] > 0
+                    ro["show"] = bool(matters)
+                    protection = ro
+                    # keep the 24h high-water mark fresh while we're here
+                    await prot.note_balance(gid, uid, balance)
+                except Exception as e:
+                    print(f"[Ignio][Sob] protection readout failed: {e}")
+
             name = getattr(user, "display_name", "You")
-            img = stats_card(name, balance, bd["earned"], bd["spent"], rates, cds)
+            img = stats_card(name, balance, bd["earned"], bd["spent"], rates, cds,
+                             protection=protection)
             buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
             await ctx.reply(file=discord.File(buf, filename="stats.png"))
             return
