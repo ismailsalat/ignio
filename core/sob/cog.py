@@ -34,6 +34,16 @@ class SobCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             return None
 
+    async def _consume_token(self, guild_id: int, user_id: int, now: int) -> None:
+        """Atomically clear a user's snitch token (used when a snitch is blocked)."""
+        db = await self.sob_repo._db()
+        async with db.key_lock("snitch", guild_id, user_id):
+            async with db.transaction() as conn:
+                await conn.execute(
+                    "UPDATE sob_users SET token_available = 0, updated_at = ? WHERE guild_id = ? AND user_id = ?",
+                    (now, guild_id, user_id),
+                )
+
     # ----- reaction listeners -------------------------------------------
 
     @commands.Cog.listener()
@@ -79,43 +89,120 @@ class SobCog(commands.Cog):
         if target_id == payload.user_id:
             return
 
-        threshold = await self.sob_repo.get_snitch_threshold(payload.guild_id)
-        added = await self.sob_repo.add_sob(
-            guild_id=payload.guild_id,
-            message_id=payload.message_id,
-            reactor_id=payload.user_id,
-            target_id=target_id,
-            snitch_threshold=threshold,
-        )
+        gid = payload.guild_id
 
-        # Sob value: each reaction is worth a scaled amount (not just 1), times
-        # the server multiplier. base add_sob credits 1; we add the rest here.
-        if added and self.economy is not None:
+        # Economy frozen by admin (exploit response): nothing is credited.
+        if self.economy is not None:
             try:
-                if await self.economy.is_frozen(payload.guild_id):
-                    return  # economy frozen by admin (exploit response)
-
-                # Alt-block: if enabled, suspicious reactors don't give sobs.
-                altblock = await self.sob_repo.get_guild_setting(payload.guild_id, "economy:altblock")
-                if altblock == "1":
-                    reactor = guild.get_member(payload.user_id)
-                    if reactor is not None:
-                        from core.economy import score_member_suspicion
-                        la = await (await self.sob_repo._db()).fetchone(
-                            "SELECT last_msg_at FROM user_activity WHERE guild_id=? AND user_id=?",
-                            (payload.guild_id, payload.user_id))
-                        last_msg = int(la["last_msg_at"]) if la else 0
-                        if score_member_suspicion(reactor, last_msg)["suspicious"]:
-                            return  # suspicious account — no sobs credited
-
-                value = await self.economy.sob_value(payload.guild_id)
-                mult = await self.economy.get_sob_multiplier(payload.guild_id)
-                total = max(1, int(round(value * mult)))
-                extra = total - 1   # base add_sob already gave 1
-                if extra > 0:
-                    await self.sob_repo.adjust_received(payload.guild_id, target_id, extra)
+                if await self.economy.is_frozen(gid):
+                    await self.sob_repo.log_security(
+                        gid, "blocked_reaction", actor_id=payload.user_id,
+                        target_id=target_id, message_id=payload.message_id,
+                        reason="economy_frozen")
+                    return
             except Exception:
                 pass
+
+        # Alt-block: if enabled, suspicious reactors don't give sobs.
+        if self.economy is not None:
+            blocked_reason = await self._altblock_reason(guild, gid, payload.user_id, target_id)
+            if blocked_reason is not None:
+                await self.sob_repo.log_security(
+                    gid, "blocked_reaction", actor_id=payload.user_id,
+                    target_id=target_id, message_id=payload.message_id,
+                    reason=blocked_reason)
+                return
+
+        # Compute the FINAL credited value ONCE (so removal/snitch refund it
+        # exactly, even if the multiplier changes later). Store the multiplier
+        # reference on the event.
+        credited = 1
+        mult_ref = ""
+        if self.economy is not None:
+            try:
+                value = await self.economy.sob_value(gid)
+                mult = await self.economy.get_sob_multiplier(gid)
+                # slow curse on the TARGET halves their earnings; lucky day boosts.
+                if self.shop_repo is not None:
+                    if await self.shop_repo.has_effect(gid, target_id, "slow"):
+                        mult *= 0.5
+                    if await self.shop_repo.has_effect(gid, target_id, "lucky"):
+                        mult *= 1.5
+                credited = max(1, int(round(value * mult)))
+                mult_ref = f"{value}x{mult:.3f}"
+            except Exception:
+                credited = 1
+
+        threshold = await self.sob_repo.get_snitch_threshold(gid)
+        try:
+            await self.sob_repo.add_sob(
+                guild_id=gid,
+                message_id=payload.message_id,
+                reactor_id=payload.user_id,
+                target_id=target_id,
+                snitch_threshold=threshold,
+                credited_amount=credited,
+                multiplier_ref=mult_ref,
+            )
+        except Exception as e:
+            print(f"[Ignio][Sob] add_sob failed: {e}")
+
+    async def _altblock_reason(self, guild, gid: int, reactor_id: int, target_id: int) -> str | None:
+        """Return a reason string if this reaction should be blocked by the
+        anti-alt protection, or None if it's allowed. Configurable per guild."""
+        try:
+            if (await self.sob_repo.get_guild_setting(gid, "economy:altblock")) != "1":
+                return None
+        except Exception:
+            return None
+
+        import time as _t
+        from core.economy import score_member_suspicion
+        now = int(_t.time())
+
+        async def _setting_int(key, default):
+            raw = await self.sob_repo.get_guild_setting(gid, key)
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return default
+
+        # account age / join age / inactivity (via score_member_suspicion)
+        reactor = guild.get_member(reactor_id)
+        if reactor is not None:
+            la = await (await self.sob_repo._db()).fetchone(
+                "SELECT last_msg_at FROM user_activity WHERE guild_id=? AND user_id=?",
+                (gid, reactor_id))
+            last_msg = int(la["last_msg_at"]) if la else 0
+            score = score_member_suspicion(reactor, last_msg)
+            if score["suspicious"]:
+                return "suspicious_account:" + ",".join(score["reasons"])
+
+        # configurable reaction-rate limit per reactor (default 60/min)
+        per_min_cap = await _setting_int("economy:altblock_rate_per_min", 60)
+        if per_min_cap > 0:
+            recent = await self.sob_repo.recent_reaction_count(gid, reactor_id, now - 60)
+            if recent >= per_min_cap:
+                return f"rate_limited:{recent}/min"
+
+        # per-target cap: how many reactions this reactor gave THIS target recently
+        pair_cap = await _setting_int("economy:altblock_pair_per_hour", 30)
+        if pair_cap > 0:
+            db = await self.sob_repo._db()
+            row = await db.fetchone(
+                "SELECT COUNT(*) AS n FROM sob_events WHERE guild_id=? AND reactor_id=? AND target_id=? AND created_at>=?",
+                (gid, reactor_id, target_id, now - 3600))
+            if row and int(row["n"]) >= pair_cap:
+                return f"pair_flood:{int(row['n'])}/hr"
+
+        # reciprocal farming: target has reacted back to reactor a lot recently
+        recip_cap = await _setting_int("economy:altblock_reciprocal", 20)
+        if recip_cap > 0:
+            recip = await self.sob_repo.reciprocal_count(gid, reactor_id, target_id, now - 3600)
+            if recip >= recip_cap:
+                return f"reciprocal_farm:{recip}/hr"
+
+        return None
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
@@ -318,30 +405,73 @@ class SobCog(commands.Cog):
             await ctx.reply(f"{embeds.ANTI} You can't snitch your own message.", mention_author=False)
             return
 
-        # Shop effects: freeze stops the snitcher; shield protects the target.
+        # Shop effects gate. Order matters:
+        #  - freeze stops the snitcher entirely
+        #  - king's decree on the snitcher pierces shields (except reflect)
+        #  - reflect on the target bounces the snitch back at the snitcher
+        #  - guardian (charge-based) and shield (time-based) block & consume token
+        king_pierce = False
         if self.shop_repo is not None:
             if await self.shop_repo.has_effect(guild.id, user.id, "freeze"):
                 await ctx.reply("❄️ You're **frozen** — you can't snitch right now.", mention_author=False)
                 return
 
-            if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "shield"):
-                # target is shielded (time-based): block the snitch and consume the
-                # snitcher's token. The shield STAYS up until its time expires.
+            king_pierce = await self.shop_repo.has_effect(guild.id, user.id, "king")
+
+            # Reflect always beats everything (even King's Decree): bounce it back.
+            if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "reflect"):
                 snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
-                if snitch_row and snitch_row["token_available"] == 1:
-                    db = await self.sob_repo._db()
-                    await db.execute(
-                        "UPDATE sob_users SET token_available = 0, updated_at = ? WHERE guild_id = ? AND user_id = ?",
-                        (now, guild.id, user.id),
-                    )
-                    await db.commit()
-                    await ctx.reply(
-                        f"🛡️ {target_msg.author.mention} is **shielded** — your snitch was blocked and your token is gone.",
-                        mention_author=False,
-                    )
-                else:
+                if not (snitch_row and snitch_row["token_available"] == 1):
                     await ctx.reply(f"{embeds.ANTI} You don't have a snitch token.", mention_author=False)
+                    return
+                await self.shop_repo.consume_charge(guild.id, target_msg.author.id, "reflect")
+                # consume the snitcher's token (the reflected attempt uses it up)
+                await self._consume_token(guild.id, user.id, now)
+                await self.sob_repo.log_security(
+                    guild.id, "shield_block", actor_id=user.id,
+                    target_id=target_msg.author.id, message_id=target_msg.id,
+                    reason="reflect")
+                await ctx.reply(
+                    f"🪞 {target_msg.author.mention} had a **Reflect Shield** — your snitch bounced back and your token is gone.",
+                    mention_author=False)
                 return
+
+            if not king_pierce:
+                # Guardian Angel: charge-based block.
+                if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "guardian"):
+                    snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
+                    if snitch_row and snitch_row["token_available"] == 1:
+                        await self.shop_repo.consume_charge(guild.id, target_msg.author.id, "guardian")
+                        await self._consume_token(guild.id, user.id, now)
+                        left = await self.shop_repo.charges_left(guild.id, target_msg.author.id, "guardian")
+                        await self.sob_repo.log_security(
+                            guild.id, "shield_block", actor_id=user.id,
+                            target_id=target_msg.author.id, message_id=target_msg.id,
+                            reason="guardian", metadata={"charges_left": left})
+                        await ctx.reply(
+                            f"😇 {target_msg.author.mention} is guarded — snitch blocked, your token is gone. "
+                            f"(Guardian charges left: {left})",
+                            mention_author=False)
+                    else:
+                        await ctx.reply(f"{embeds.ANTI} You don't have a snitch token.", mention_author=False)
+                    return
+
+                # Time-based Shield.
+                if await self.shop_repo.has_effect(guild.id, target_msg.author.id, "shield"):
+                    snitch_row = await self.sob_repo.get_snitch_row(guild.id, user.id)
+                    if snitch_row and snitch_row["token_available"] == 1:
+                        await self._consume_token(guild.id, user.id, now)
+                        await self.sob_repo.log_security(
+                            guild.id, "shield_block", actor_id=user.id,
+                            target_id=target_msg.author.id, message_id=target_msg.id,
+                            reason="shield")
+                        await ctx.reply(
+                            f"🛡️ {target_msg.author.mention} is **shielded** — your snitch was blocked and your token is gone.",
+                            mention_author=False,
+                        )
+                    else:
+                        await ctx.reply(f"{embeds.ANTI} You don't have a snitch token.", mention_author=False)
+                    return
 
         success, reason, removed = await self.sob_repo.snitch_message(
             guild_id=guild.id,
@@ -361,32 +491,70 @@ class SobCog(commands.Cog):
             snitch_tax = 0
             if self.economy is not None:
                 try:
+                    from core import ledger as _ledger
                     from core.economy import SNITCH_STEAL_PCT, SNITCH_TAX_PCT
+                    tx = _ledger.new_tx_id()
                     reward = await self.economy.snitch_reward(guild.id)
 
-                    # boost multiplier (if any boost effect active)
+                    # Highest applicable steal multiplier from active buffs.
+                    # Charge-based buffs (hunter) are consumed; king pierces.
                     boost_mult = 1.0
+                    consumed_charge_item = None
                     if self.shop_repo is not None:
                         from core.shop.catalog import BUILTIN_ITEMS
                         for ik, it in BUILTIN_ITEMS.items():
-                            if it.get("mechanic", "").startswith("steal_mult"):
-                                eff = it.get("effect_key") or ik
-                                if await self.shop_repo.has_effect(guild.id, user.id, eff):
-                                    boost_mult = max(boost_mult, float(it.get("multiplier", 1.5)))
+                            mech = it.get("mechanic", "")
+                            if not mech.startswith("steal_mult"):
+                                continue
+                            eff = it.get("effect_key") or ik
+                            if await self.shop_repo.has_effect(guild.id, user.id, eff):
+                                m = float(it.get("multiplier", 1.5))
+                                if m > boost_mult:
+                                    boost_mult = m
+                                    if "charges" in mech:
+                                        consumed_charge_item = (eff, ik)
+                        # marked bounty on the target adds a bonus to the steal
+                        if await self.shop_repo.has_effect(guild.id, target_uid, "marked"):
+                            bounty = float(BUILTIN_ITEMS.get("marked", {}).get("bounty_pct", 0.20))
+                            boost_mult *= (1.0 + bounty)
 
-                    # steal 50% of wiped (×boost), capped at target's balance
-                    tgt_stats = await self.sob_repo.get_user_stats(guild.id, target_uid)
-                    tgt_bal = int(tgt_stats["sobs_alltime"])
-                    stolen = min(int(removed * SNITCH_STEAL_PCT * boost_mult), tgt_bal)
-                    if stolen > 0:
-                        await self.sob_repo.adjust_received(guild.id, target_uid, -stolen)
+                    # consume one hunter charge if it was the buff used
+                    if consumed_charge_item is not None:
+                        eff, _ik = consumed_charge_item
+                        ok_c, left_c = await self.shop_repo.consume_charge(guild.id, user.id, eff)
 
+                    # steal 50% of wiped (×boost), capped at target's balance —
+                    # conserved, ledgered transfer (no minting).
+                    stolen = await self.sob_repo.transfer(
+                        guild.id, target_uid, user.id,
+                        int(removed * SNITCH_STEAL_PCT * boost_mult),
+                        event_type=_ledger.EVT_SNITCH_STEAL, actor_id=user.id,
+                        transaction_id=tx, cap_to_balance=True,
+                        message_id=target_msg.id,
+                        metadata={"boost_mult": boost_mult, "wiped": removed},
+                    )
+
+                    # base reward is minted to the snitcher, then taxed.
                     gross = reward + stolen
                     snitch_tax = int(gross * SNITCH_TAX_PCT / 100)
-                    net = gross - snitch_tax
-                    await self.sob_repo.adjust_received(guild.id, user.id, net)
+                    # credit the base reward (mint) + ledger
+                    if reward > 0:
+                        await self.sob_repo.adjust_received(
+                            guild.id, user.id, reward,
+                            event_type=_ledger.EVT_SNITCH_REWARD, actor_id=user.id,
+                            counterparty_id=target_uid, transaction_id=tx,
+                            message_id=target_msg.id)
+                    # remove the tax from the snitcher and route to treasury
                     if snitch_tax > 0:
-                        await self.economy.add_treasury(guild.id, snitch_tax, payer_id=user.id)
+                        ok_t, _bal = await self.sob_repo.spend(
+                            guild.id, user.id, snitch_tax,
+                            event_type=_ledger.EVT_SNITCH_TAX, actor_id=user.id,
+                            transaction_id=tx, treasury_amount=snitch_tax,
+                            metadata={"of": gross})
+                        if ok_t:
+                            await self.economy.add_treasury(guild.id, snitch_tax, payer_id=user.id)
+                        else:
+                            snitch_tax = 0
                 except Exception as e:
                     print(f"[Ignio][Snitch] reward/steal failed: {e}")
 
