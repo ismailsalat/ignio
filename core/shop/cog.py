@@ -86,7 +86,14 @@ async def do_buy(shop, sob_repo, guild_id, user_id, item_key, qty=1):
 async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=None):
     """Returns (ok, embed). Handles built-in + custom (claim) items.
     item_key may be a key or a display name. `amount` is used for stackable
-    items like the per-second Shield."""
+    items like the per-second Shield.
+
+    Consume-safety: the item is removed with a conditional UPDATE that only
+    succeeds if the user actually holds it, and the unit is only consumed when
+    the action it pays for goes through. Inventory can never go negative and a
+    single unit can never trigger two effects.
+    """
+    from core import ledger
     resolved = await shop.get_item(guild_id, item_key)
     key = resolved["key"] if resolved else item_key.lower()
     inv = await shop.get_inventory(guild_id, user.id)
@@ -96,11 +103,15 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
 
     builtin = BUILTIN_ITEMS.get(key)
     db = await shop._db()
+    ts = now_ts()
 
-    # custom server item -> claim
+    # custom server item -> claim (atomic consume; only claim if consumed)
     if builtin is None:
-        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        took = await shop._take_from_inventory(db, guild_id, user.id, key, 1, ts)
         await db.commit()
+        if not took:
+            return False, embeds.error_embed(f"You don't own a `{key}`.")
+        await shop.log_effect(guild_id, ledger.EVT_SERVER_CLAIM, user.id, item_key=key)
         catalog = await shop.get_catalog(guild_id)
         it = next((c for c in catalog if c["key"] == key), {"name": key, "icon": "🎁", "key": key})
         return "claim", it
@@ -108,8 +119,12 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
     effect_key = builtin["effect_key"]
     duration = builtin.get("duration", 0)
     mechanic = builtin.get("mechanic", "")
+    charges = int(builtin.get("charges", 0) or 0)
     is_targeted = key in TARGETED_EFFECTS
     eco = economy if economy is not None else getattr(shop, "economy", None)
+
+    # If an item's advertised effect can't be enforced yet, it's disabled in
+    # the catalog (see ENFORCED_MECHANICS). get_item already filters those out.
 
     # jailed? can't use items
     if await shop.has_effect(guild_id, user.id, "jail"):
@@ -144,7 +159,6 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         crit = False
         blocked = False
         if is_heist:
-            # heist: 20% crit pierces & breaks a shield; otherwise blocked by shield
             if await shop.has_effect(guild_id, target.id, "shield"):
                 if random.random() < AUDIT_HEIST_CRIT:
                     crit = True
@@ -152,14 +166,17 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
                 else:
                     blocked = True
         else:
-            # basic: blocked by a shield OR an audit ward
             if await shop.has_effect(guild_id, target.id, "shield") or \
                await shop.has_effect(guild_id, target.id, "audit_ward"):
                 blocked = True
 
         if blocked:
-            await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+            took = await shop._take_from_inventory(db, guild_id, user.id, key, 1, ts)
             await db.commit()
+            if not took:
+                return False, embeds.error_embed(f"You don't own a `{key}`.")
+            await shop.log_effect(guild_id, ledger.EVT_SHIELD_BLOCK, target.id,
+                                  actor_id=user.id, item_key=key)
             return True, embeds.error_embed(
                 f"🛡️ {target.mention}'s shield blocked your {builtin['name']}! (item consumed)")
 
@@ -172,16 +189,23 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         if steal <= 0:
             return False, embeds.error_embed(f"{target.mention} is protected from more audits today.")
 
-        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        # consume the item first; only steal if it was actually consumed
+        took = await shop._take_from_inventory(db, guild_id, user.id, key, 1, ts)
         await db.commit()
-        await shop.sob_repo.adjust_received(guild_id, target.id, -steal)
-        await shop.sob_repo.adjust_received(guild_id, user.id, +steal)
-        await eco.log_audit(guild_id, user.id, target.id, steal)
+        if not took:
+            return False, embeds.error_embed(f"You don't own a `{key}`.")
+        # conserved, ledgered transfer (no minting)
+        moved = await shop.sob_repo.transfer(
+            guild_id, target.id, user.id, steal,
+            event_type=ledger.EVT_AUDIT_STEAL, actor_id=user.id, cap_to_balance=True,
+            metadata={"item": key, "crit": crit})
+        await eco.log_audit(guild_id, user.id, target.id, moved)
+        await shop.log_effect(guild_id, ledger.EVT_INV_CONSUME, user.id, item_key=key)
 
         extra = " 💥 **CRIT — smashed their shield!**" if crit else ""
         return True, embeds.used_embed(
             f"{builtin['icon']} {builtin['name']}",
-            f"{user.mention} audited {target.mention} and seized **{steal:,} sobs**!{extra}")
+            f"{user.mention} audited {target.mention} and seized **{moved:,} sobs**!{extra}")
 
     # ---- targeted, duration-based debuffs (freeze, slow, marked, jail) ----
     if is_targeted:
@@ -193,9 +217,15 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
             return False, embeds.error_embed("You can't target a bot.")
         if effect_key and await shop.has_effect(guild_id, target.id, effect_key):
             return False, embeds.error_embed(f"{target.mention} already has that effect active.")
-        await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+        took = await shop._take_from_inventory(db, guild_id, user.id, key, 1, ts)
         await db.commit()
-        await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id, expires_at=now_ts() + duration)
+        if not took:
+            return False, embeds.error_embed(f"You don't own a `{key}`.")
+        await shop.add_effect(guild_id, target.id, effect_key, source_user_id=user.id,
+                              expires_at=ts + duration)
+        await shop.log_effect(guild_id, ledger.EVT_EFFECT_ACTIVATE, target.id,
+                              actor_id=user.id, item_key=key,
+                              metadata={"effect": effect_key, "duration": duration})
         verbs = {
             "block_tokens": f"froze {target.mention} — no snitching",
             "halve_earnings": f"cursed {target.mention} — half sob earnings",
@@ -212,12 +242,18 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
         if secs > owned:
             return False, embeds.error_embed(
                 f"You only have **{owned}** {builtin['name']} units. Buy more or use fewer.")
-        await shop._take_from_inventory(db, guild_id, user.id, key, secs, now_ts())
-        # extend existing shield if active, else start fresh
-        cur_exp = await shop.effect_expiry(guild_id, user.id, effect_key)
-        base = max(cur_exp, now_ts())
-        await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=base + secs)
+        took = await shop._take_from_inventory(db, guild_id, user.id, key, secs, ts)
         await db.commit()
+        if not took:
+            return False, embeds.error_embed(
+                f"You only have **{owned}** {builtin['name']} units. Buy more or use fewer.")
+        cur_exp = await shop.effect_expiry(guild_id, user.id, effect_key)
+        base = max(cur_exp, ts)
+        await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id,
+                              expires_at=base + secs)
+        await shop.log_effect(guild_id, ledger.EVT_EFFECT_ACTIVATE, user.id,
+                              item_key=key, quantity=secs,
+                              metadata={"effect": effect_key, "seconds": secs})
         return True, embeds.used_embed(
             f"{builtin['icon']} {builtin['name']} active",
             f"You're protected from snitches for **{_dur_text(secs)}** ({secs} units used).")
@@ -225,16 +261,25 @@ async def do_use(shop, guild_id, user, item_key, target=None, amount=1, economy=
     # ---- self effects (guardian, reflect, boosts, buffs) ----
     if effect_key and await shop.has_effect(guild_id, user.id, effect_key):
         return False, embeds.error_embed("You already have that effect active.")
-    await shop._take_from_inventory(db, guild_id, user.id, key, 1, now_ts())
+    took = await shop._take_from_inventory(db, guild_id, user.id, key, 1, ts)
     await db.commit()
-    expires_at = now_ts() + duration if duration else 0
-    await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id, expires_at=expires_at)
+    if not took:
+        return False, embeds.error_embed(f"You don't own a `{key}`.")
+    expires_at = ts + duration if duration else 0
+    await shop.add_effect(guild_id, user.id, effect_key, source_user_id=user.id,
+                          expires_at=expires_at, charges=charges)
+    await shop.log_effect(guild_id, ledger.EVT_EFFECT_ACTIVATE, user.id, item_key=key,
+                          metadata={"effect": effect_key, "charges": charges, "duration": duration})
     if mechanic in ("block_snitch", "block_charges"):
-        msg = "You're protected from snitches"
+        msg = f"You're protected from snitches"
+        if charges:
+            msg += f" — blocks the next **{charges}** snitches"
     elif mechanic == "reflect_next":
         msg = "Your next attacker gets reflected"
     elif mechanic == "earn_bonus":
         msg = "Your sob earnings are boosted"
+    elif "charges" in mechanic:
+        msg = f"Your next **{charges}** snitches are boosted"
     else:
         msg = "Your snitches are boosted"
     tail = f" for {_dur_text(duration)}." if duration else "."

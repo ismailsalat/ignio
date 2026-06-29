@@ -126,6 +126,28 @@ TARGETED_EFFECTS = {"freeze", "freeze_deep", "audit", "heist", "slow_curse", "ma
 SELF_EFFECTS = {"shield", "guardian", "audit_ward", "reflect",
                 "boost", "boost_adv", "hunter", "lucky", "king"}
 
+# Mechanics whose advertised effect is actually enforced in code. Any built-in
+# whose mechanic is NOT in this set is auto-disabled in the shop (see
+# ShopRepo.get_catalog) so players can never buy something that does nothing.
+# Every mechanic currently shipped is enforced; this guard keeps that honest if
+# a new item is added before its logic exists.
+ENFORCED_MECHANICS = {
+    "block_snitch",       # shield (time-based)
+    "block_charges",      # guardian (charge-based)
+    "block_audit",        # audit_ward
+    "reflect_next",       # reflect
+    "block_tokens",       # freeze / deep freeze
+    "audit_basic",        # basic audit
+    "audit_heist",        # grand heist
+    "halve_earnings",     # slow curse
+    "mark_bounty",        # marked target
+    "lock_items",         # jail
+    "steal_mult",         # boost / advanced boost
+    "steal_mult_charges", # hunter's blessing
+    "earn_bonus",         # lucky day
+    "steal_mult_pierce",  # king's decree
+}
+
 # Category display order + labels.
 CATEGORY_ORDER = [
     ("protection", "🛡️ Protection"),

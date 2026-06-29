@@ -53,10 +53,16 @@ class ShopRepo:
 
         catalog: list[dict[str, Any]] = []
         # built-ins first (with any overrides applied)
+        from core.shop.catalog import ENFORCED_MECHANICS
         for key, base in BUILTIN_ITEMS.items():
             item = dict(base)
             item["stock"] = -1
             item["enabled"] = True
+            # Safety: if an item's advertised mechanic isn't actually enforced
+            # in code yet, it must not be buyable (requirement: disable broken
+            # effects until they work).
+            if base.get("mechanic", "") not in ENFORCED_MECHANICS:
+                item["enabled"] = False
             # auto-price unless admin overrode it
             if key in auto_prices and key not in overrides:
                 item["price"] = auto_prices[key]
@@ -151,17 +157,17 @@ class ShopRepo:
         )
 
     async def _take_from_inventory(self, db, guild_id: int, user_id: int, item_key: str, qty: int, ts: int) -> bool:
-        row = await db.fetchone(
-            "SELECT quantity FROM shop_inventory WHERE guild_id = ? AND user_id = ? AND item_key = ?",
-            (guild_id, user_id, item_key),
+        """Atomically remove `qty` of an item ONLY if the user holds at least
+        that many. Uses a conditional UPDATE and checks the row count, so it
+        can never drive a quantity negative and two concurrent uses can't both
+        consume the same unit. `db` may be the shared connection or an open
+        transaction connection."""
+        cur = await db.execute(
+            "UPDATE shop_inventory SET quantity = quantity - ?, updated_at = ? "
+            "WHERE guild_id = ? AND user_id = ? AND item_key = ? AND quantity >= ?",
+            (qty, ts, guild_id, user_id, item_key, qty),
         )
-        if row is None or int(row["quantity"]) < qty:
-            return False
-        await db.execute(
-            "UPDATE shop_inventory SET quantity = quantity - ?, updated_at = ? WHERE guild_id = ? AND user_id = ? AND item_key = ?",
-            (qty, ts, guild_id, user_id, item_key),
-        )
-        return True
+        return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # buying
@@ -170,7 +176,14 @@ class ShopRepo:
     async def buy(self, guild_id: int, user_id: int, item_key: str, qty: int = 1) -> tuple[bool, str, dict | None]:
         """Spend sobs to add an item to inventory.
         Returns (success, reason, item). reason in:
-        ok, no_item, disabled, out_of_stock, not_enough_sobs."""
+        ok, no_item, disabled, out_of_stock, not_enough_sobs.
+
+        The charge (base + tax) is taken with a conditional spend that rejects
+        if the balance is too low, the inventory grant, the stock decrement and
+        all ledger rows happen in one atomic transaction, and the whole thing is
+        serialised per user. Two concurrent !buy can't both pass on one balance.
+        """
+        from core import ledger
         qty = max(1, int(qty))
         item = await self.get_item(guild_id, item_key)
         if item is None:
@@ -181,7 +194,6 @@ class ShopRepo:
         cost = int(item["price"]) * qty
 
         # Tax is added ON TOP for built-in PvP items (server items are untaxed).
-        # The base price is burned (sink); the tax goes to the server treasury.
         tax_amount = 0
         is_builtin = item["key"] in BUILTIN_ITEMS
         if self.economy is not None and is_builtin:
@@ -192,29 +204,82 @@ class ShopRepo:
                 tax_amount = 0
         total_charge = cost + tax_amount
 
-        stats = await self.sob_repo.get_user_stats(guild_id, user_id)
-        if stats["sobs_alltime"] < total_charge:
-            return False, "not_enough_sobs", item
-
         db = await self._db()
         ts = now_ts()
-        canonical_key = item["key"]  # always store under the real key, not raw input
+        canonical_key = item["key"]
+        tx = ledger.new_tx_id()
 
-        # stock check + decrement (custom items only; built-ins are unlimited)
-        if item["stock"] is not None and item["stock"] >= 0:
-            if item["stock"] < qty:
-                return False, "out_of_stock", item
-            await db.execute(
-                "UPDATE shop_items SET stock = stock - ?, updated_at = ? WHERE guild_id = ? AND item_key = ?",
-                (qty, ts, guild_id, canonical_key),
-            )
+        async with db.key_lock("sob", guild_id, user_id):
+            async with db.transaction() as conn:
+                # stock check + decrement (custom items only; built-ins unlimited)
+                if item["stock"] is not None and item["stock"] >= 0:
+                    cur = await conn.execute(
+                        "UPDATE shop_items SET stock = stock - ?, updated_at = ? "
+                        "WHERE guild_id = ? AND item_key = ? AND stock >= ?",
+                        (qty, ts, guild_id, canonical_key, qty),
+                    )
+                    if cur.rowcount == 0:
+                        return False, "out_of_stock", item
 
-        # charge sobs (base + tax) — lowers leaderboard — then grant item
-        await self.sob_repo.adjust_received(guild_id, user_id, -total_charge)
-        await self._add_to_inventory(db, guild_id, user_id, canonical_key, qty, ts)
-        await db.commit()
+                # conditional spend: rejects atomically if too poor
+                await self.sob_repo._ensure_user_row(conn, guild_id, user_id, ts)
+                before = await self.sob_repo._balance(conn, guild_id, user_id)
+                cur = await conn.execute(
+                    "UPDATE sob_users SET sobs_received_alltime = sobs_received_alltime - ?, "
+                    "updated_at = ? WHERE guild_id = ? AND user_id = ? AND sobs_received_alltime >= ?",
+                    (total_charge, ts, guild_id, user_id, total_charge),
+                )
+                if cur.rowcount == 0:
+                    return False, "not_enough_sobs", item
+                after = before - total_charge
 
-        # Split the charge: base is burned (sink), tax goes to the treasury pot.
+                # keep period rollups in step
+                from core.time_utils import today_keys
+                day_k, week_k = today_keys()
+                for ptype, pkey in (("day", day_k), ("week", week_k)):
+                    await conn.execute(
+                        "UPDATE sob_periods SET sobs_received = MAX(0, sobs_received - ?), "
+                        "updated_at = ? WHERE guild_id = ? AND user_id = ? AND period_type = ? AND period_key = ?",
+                        (total_charge, ts, guild_id, user_id, ptype, pkey),
+                    )
+
+                # grant the item
+                await self._add_to_inventory(conn, guild_id, user_id, canonical_key, qty, ts)
+
+                # ledger: base cost (burn for built-ins), tax, inventory add
+                burn = cost if is_builtin else 0
+                await ledger.record(
+                    conn, guild_id=guild_id, event_type=ledger.EVT_SHOP_BASE,
+                    transaction_id=tx, subject_id=user_id, actor_id=user_id,
+                    delta=-total_charge, balance_before=before, balance_after=after,
+                    item_key=canonical_key, item_name=item.get("name", canonical_key),
+                    quantity=qty, price=int(item["price"]),
+                    tax_amount=tax_amount, burned_amount=burn,
+                    metadata={"builtin": is_builtin}, created_at=ts,
+                )
+                if tax_amount > 0:
+                    await ledger.record(
+                        conn, guild_id=guild_id, event_type=ledger.EVT_SHOP_TAX,
+                        transaction_id=tx, subject_id=user_id, actor_id=user_id,
+                        delta=0, balance_before=after, balance_after=after,
+                        item_key=canonical_key, treasury_amount=tax_amount, created_at=ts,
+                    )
+                if burn > 0:
+                    await ledger.record(
+                        conn, guild_id=guild_id, event_type=ledger.EVT_SHOP_BURN,
+                        transaction_id=tx, subject_id=user_id, actor_id=user_id,
+                        delta=0, balance_before=after, balance_after=after,
+                        item_key=canonical_key, burned_amount=burn, created_at=ts,
+                    )
+                await ledger.record(
+                    conn, guild_id=guild_id, event_type=ledger.EVT_INV_ADD,
+                    transaction_id=tx, subject_id=user_id, actor_id=user_id,
+                    delta=0, balance_before=after, balance_after=after,
+                    item_key=canonical_key, item_name=item.get("name", canonical_key),
+                    quantity=qty, created_at=ts,
+                )
+
+        # Split the charge into the sinks AFTER the balance change committed.
         if self.economy is not None and is_builtin:
             try:
                 await self.economy.add_burned(guild_id, cost)
@@ -223,7 +288,6 @@ class ShopRepo:
             except Exception:
                 pass
 
-        # expose what was charged so the buy embed can show it
         item = dict(item)
         item["_charged"] = total_charge
         item["_tax"] = tax_amount
@@ -234,17 +298,70 @@ class ShopRepo:
     # ------------------------------------------------------------------
 
     async def add_effect(self, guild_id: int, target_user_id: int, effect_key: str,
-                         *, source_user_id: int = 0, expires_at: int = 0) -> None:
+                         *, source_user_id: int = 0, expires_at: int = 0,
+                         charges: int = 0) -> None:
         db = await self._db()
         ts = now_ts()
         await db.execute(
             """
-            INSERT INTO active_effects (guild_id, target_user_id, effect_key, source_user_id, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO active_effects (guild_id, target_user_id, effect_key, source_user_id, expires_at, created_at, charges_remaining)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (guild_id, target_user_id, effect_key, source_user_id, expires_at, ts),
+            (guild_id, target_user_id, effect_key, source_user_id, expires_at, ts, int(charges)),
         )
         await db.commit()
+
+    async def consume_charge(self, guild_id: int, user_id: int, effect_key: str) -> tuple[bool, int]:
+        """Decrement one charge of a charge-based effect (guardian, hunter,
+        reflect, ...). Removes the effect row when it hits 0. Returns
+        (consumed, charges_left). Atomic per (guild, user, effect)."""
+        db = await self._db()
+        async with db.key_lock("effect", guild_id, user_id, effect_key):
+            async with db.transaction() as conn:
+                cur = await conn.execute(
+                    "SELECT effect_id, charges_remaining FROM active_effects "
+                    "WHERE guild_id=? AND target_user_id=? AND effect_key=? "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (guild_id, user_id, effect_key),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+                if row is None:
+                    return False, 0
+                left = int(row["charges_remaining"]) - 1
+                if left <= 0:
+                    await conn.execute("DELETE FROM active_effects WHERE effect_id = ?", (int(row["effect_id"]),))
+                    return True, 0
+                await conn.execute(
+                    "UPDATE active_effects SET charges_remaining = ? WHERE effect_id = ?",
+                    (left, int(row["effect_id"])),
+                )
+                return True, left
+
+    async def charges_left(self, guild_id: int, user_id: int, effect_key: str) -> int:
+        db = await self._db()
+        row = await db.fetchone(
+            "SELECT COALESCE(SUM(charges_remaining),0) AS c FROM active_effects "
+            "WHERE guild_id=? AND target_user_id=? AND effect_key=?",
+            (guild_id, user_id, effect_key),
+        )
+        return int(row["c"]) if row else 0
+
+    async def log_effect(self, guild_id: int, event_type: str, subject_id: int,
+                         *, actor_id: int = 0, item_key: str = "", quantity: int = 0,
+                         metadata: dict | None = None) -> None:
+        """Append a zero-delta ledger row recording an item/effect lifecycle
+        event (use, block, activation, expiration, consumed charge, claim) so
+        the export can show exactly what happened without a balance change."""
+        from core import ledger
+        db = await self._db()
+        async with db.transaction() as conn:
+            await ledger.record(
+                conn, guild_id=guild_id, event_type=event_type,
+                transaction_id=ledger.new_tx_id(), subject_id=subject_id,
+                actor_id=actor_id or subject_id, counterparty_id=actor_id,
+                delta=0, item_key=item_key, quantity=quantity, metadata=metadata,
+            )
 
     async def get_effects(self, guild_id: int, user_id: int) -> list[dict[str, Any]]:
         """Active (non-expired) effects on a user. Cleans up expired rows."""
@@ -257,7 +374,7 @@ class ShopRepo:
         )
         await db.commit()
         rows = await db.fetchall(
-            "SELECT effect_id, effect_key, source_user_id, expires_at, created_at FROM active_effects WHERE guild_id = ? AND target_user_id = ?",
+            "SELECT effect_id, effect_key, source_user_id, expires_at, created_at, charges_remaining FROM active_effects WHERE guild_id = ? AND target_user_id = ?",
             (guild_id, user_id),
         )
         return [dict(r) for r in rows]
@@ -326,34 +443,30 @@ class ShopRepo:
         the same amount to the snitcher — but never more than the target actually
         has (so the economy is conserved; no sobs are created).
 
-        Returns the number of sobs actually transferred.
+        Returns the number of sobs actually transferred. Atomic + ledgered.
         """
+        from core import ledger
         if sobs_wiped <= 0:
             return 0
         mult = multiplier if multiplier is not None else await self.get_boost_multiplier(guild_id)
         desired = int(round(sobs_wiped * mult))
-
-        # cap by what the target currently has (conserved transfer)
-        target_stats = await self.sob_repo.get_user_stats(guild_id, target_id)
-        available = int(target_stats["sobs_alltime"])
-        transfer = min(desired, available)
-        if transfer <= 0:
-            return 0
-
-        # drain target, credit snitcher (adjust_received floors at 0 and updates day/week)
-        await self.sob_repo.adjust_received(guild_id, target_id, -transfer)
-        await self.sob_repo.adjust_received(guild_id, snitcher_id, +transfer)
-        return transfer
+        return await self.sob_repo.transfer(
+            guild_id, target_id, snitcher_id, desired,
+            event_type=ledger.EVT_SNITCH_STEAL, actor_id=snitcher_id,
+            cap_to_balance=True, metadata={"boost_mult": mult, "wiped": sobs_wiped})
 
     async def apply_tax_audit(self, guild_id: int, auditor_id: int, target_id: int,
                               pct: float = 0.05, cap: int = 5000) -> int:
         """Instantly steal pct of the target's sobs (capped). Conserved transfer —
-        the auditor gains exactly what the target loses; nothing is minted."""
+        the auditor gains exactly what the target loses; nothing is minted.
+        Atomic + ledgered."""
+        from core import ledger
         target_stats = await self.sob_repo.get_user_stats(guild_id, target_id)
         bal = int(target_stats["sobs_alltime"])
         amount = min(int(bal * pct), cap, bal)
         if amount <= 0:
             return 0
-        await self.sob_repo.adjust_received(guild_id, target_id, -amount)
-        await self.sob_repo.adjust_received(guild_id, auditor_id, +amount)
-        return amount
+        return await self.sob_repo.transfer(
+            guild_id, target_id, auditor_id, amount,
+            event_type=ledger.EVT_AUDIT_STEAL, actor_id=auditor_id,
+            cap_to_balance=True, metadata={"pct": pct, "cap": cap})
