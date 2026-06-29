@@ -312,6 +312,24 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_target_day ON audit_events(guild_id, target_id, day);
 """
 
+
+# Game matches: logs every PvP game (roulette, future coinflip/blackjack/etc).
+# Additive. Powers stats + !admin export.
+_GAME_LOG = """
+CREATE TABLE IF NOT EXISTS game_events (
+    guild_id    INTEGER NOT NULL,
+    game        TEXT    NOT NULL,
+    challenger  INTEGER NOT NULL,
+    opponent    INTEGER NOT NULL,
+    wager       INTEGER NOT NULL,
+    winner      INTEGER NOT NULL,
+    loser       INTEGER NOT NULL,
+    tax         INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_game_events_guild ON game_events(guild_id, created_at);
+"""
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -321,6 +339,7 @@ MIGRATIONS = [
     (205, "daily_claims", _DAILY),
     (206, "tax_events", _TAX_LOG),
     (207, "audit_events", _AUDIT_LOG),
+    (208, "game_events", _GAME_LOG),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

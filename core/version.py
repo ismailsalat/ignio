@@ -28,6 +28,7 @@ CHANGELOG = [
             "Every item rebalanced & auto-priced by power and economy",
             "Fixed !eco inflation graph (recent change, not lifetime) + dates",
             "!admin export now includes all economy data for tuning",
+            "NEW Games category — Russian Roulette PvP (!roulette @user <amount>)",
         ],
     },
     {

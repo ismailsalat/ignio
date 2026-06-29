@@ -21,6 +21,7 @@ CATEGORIES = {
     "sobs":    ("😭", "Sobs & Profile"),
     "profile": ("🎴", "Profile"),
     "shop":    ("🛒", "Shop"),
+    "games":   ("🎲", "Games"),
     "economy": ("😭", "Economy"),
     "admin":   ("🛡️", "Admin"),
     "info":    ("ℹ️", "Info"),
@@ -79,6 +80,10 @@ COMMANDS = [
     {"name": "perms", "cat": "admin", "desc": "View/grant role permissions", "usage": "perms [grant|revoke @role <perm>]", "admin": True},
     {"name": "announce", "cat": "admin", "desc": "Post an announcement", "usage": "announce #channel Title | Body", "admin": True},
 
+    # ---- Games ----
+    {"name": "roulette", "cat": "games", "desc": "Russian Roulette — wager sobs 50/50", "usage": "roulette @user <amount>"},
+    {"name": "roulettestats", "cat": "games", "desc": "See roulette match history & odds", "usage": "rrstats"},
+
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},
     {"name": "guide", "cat": "info", "desc": "How the bot works (for newcomers)", "usage": "guide"},
@@ -102,7 +107,7 @@ def for_category(cat: str, *, is_admin: bool = False, is_owner: bool = False) ->
 
 
 def visible_categories(is_admin: bool = False) -> list[str]:
-    cats = ["sobs", "profile", "shop", "economy", "info"]
+    cats = ["sobs", "profile", "shop", "games", "economy", "info"]
     if is_admin:
         cats.append("admin")
     return cats

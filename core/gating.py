@@ -27,6 +27,8 @@ COMMAND_CATEGORY: dict[str, str] = {
     "use": "shop",
     "me": "shop",
     "daily": "shop",
+    "roulette": "games",
+    "rr": "games",
     # Profile (the !sob set lives under sob, but the card itself is 'sobs')
     # Admin / config (never disablable)
     "admin": "admin",
@@ -40,7 +42,7 @@ COMMAND_CATEGORY: dict[str, str] = {
     "treasury": "admin",
 }
 
-CATEGORIES = ("sobs", "shop", "profile", "admin")
+CATEGORIES = ("sobs", "shop", "profile", "games", "admin")
 PROTECTED_CATEGORIES = {"admin"}  # never disablable
 
 

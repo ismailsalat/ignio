@@ -155,6 +155,7 @@ def guide_card() -> Image.Image:
         "Shields — protect yourself from snitches",
         "Debuffs — freeze, curse & jail your rivals",
         "Server items — Nitro, gift cards & more",
+        "Games — risk sobs head-to-head (try !roulette)",
     ]
     H = 230 + len(earn) * 38 + 80 + len(spend) * 38 + 50
     img, d = _base(W, H)

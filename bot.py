@@ -25,6 +25,7 @@ from core.about_cog import AboutCog
 from core.economy import Economy
 from core.economy_cog import EconomyCog
 from core.daily_cog import DailyCog
+from core.games.roulette_cog import RouletteCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -64,6 +65,8 @@ async def run() -> None:
     db_manager = DatabaseManager(path=db_path)
     sob_repo = SobRepo(db_manager)
     economy = Economy(sob_repo)
+    from core.games.engine import GamesEngine
+    games_engine = GamesEngine(sob_repo, economy)
     shop_repo = ShopRepo(db_manager, sob_repo, economy)
     profile_service = ProfileService(bot, settings, sob_repo)
     gate = Gating(sob_repo)
@@ -92,6 +95,7 @@ async def run() -> None:
             ("EconomyCog", EconomyCog(bot, settings, sob_repo)),
             ("DailyCog", DailyCog(bot, settings, sob_repo)),
             ("AboutCog", AboutCog(bot, settings, sob_repo)),
+            ("RouletteCog", RouletteCog(bot, settings, sob_repo, games_engine)),
         ):
             try:
                 await bot.add_cog(cog)

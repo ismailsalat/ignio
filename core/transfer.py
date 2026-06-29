@@ -43,7 +43,7 @@ EXPORT_VERSION = 1
 # Tables that hold per-guild sob data, all keyed by guild_id.
 _GUILD_TABLES = ("sob_users", "sob_events", "sob_periods", "guild_settings",
                  "economy_snapshots", "daily_claims", "tax_events", "audit_events",
-                 "shop_items", "shop_inventory", "active_effects")
+                 "game_events", "shop_items", "shop_inventory", "active_effects")
 
 
 async def export_guild(db: Database, guild_id: int) -> dict[str, Any]:
