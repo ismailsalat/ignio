@@ -51,13 +51,14 @@ def _grouped_from_catalog(catalog, only_category=None):
                     "name": c["name"],
                     "price": c.get("_final_price", c["price"]),
                     "stackable": bool(base.get("stackable")),
+                    "description": c.get("description", ""),
                 })
         if items:
             grouped[cat] = items
     return grouped
 
 
-def _shop_picture(balance, catalog, only_category=None):
+def _shop_picture(balance, catalog, only_category=None, page=0):
     """Render the shop as a Discord file, or None if it fails (embed fallback)."""
     try:
         from core.profile.shop_render import make_shop_card
@@ -65,12 +66,17 @@ def _shop_picture(balance, catalog, only_category=None):
         grouped = _grouped_from_catalog(catalog, only_category)
         if not grouped:
             return None
-        img = make_shop_card(balance, grouped, only_category=only_category)
+        img = make_shop_card(balance, grouped, only_category=only_category, page=page)
         buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
         return discord.File(buf, filename="shop.png")
     except Exception as e:
         print(f"[Ignio][Shop] picture render failed, using embed: {e}")
         return None
+
+
+def _cat_page_count(catalog, cat_key, per_page=6):
+    items = [c for c in catalog if c["category"] == cat_key and c["enabled"]]
+    return max(1, (len(items) + per_page - 1) // per_page)
 
 
 async def do_buy(shop, sob_repo, guild_id, user_id, item_key, qty=1):
@@ -287,15 +293,26 @@ class CategoryButton(discord.ui.Button):
 
 
 class CategoryView(discord.ui.View):
-    """Inside a category: a buy button per item + Back."""
+    """Inside a category: a buy button per item (this page) + Back, with
+    Prev/Next when the category spans multiple pages."""
 
-    def __init__(self, cog, ctx, catalog, cat_key, items):
+    def __init__(self, cog, ctx, catalog, cat_key, items, page=0, per_page=6):
         super().__init__(timeout=180)
         self.cog = cog
         self.ctx = ctx
         self.catalog = catalog
-        for item in items[:23]:  # leave room for Back
+        self.cat_key = cat_key
+        self.items = items
+        self.page = page
+        self.per_page = per_page
+        total_pages = max(1, (len(items) + per_page - 1) // per_page)
+        self.total_pages = total_pages
+        page_items = items[page * per_page:(page + 1) * per_page]
+        for item in page_items:
             self.add_item(BuyButton(item))
+        if total_pages > 1:
+            self.add_item(PageButton(-1, disabled=(page <= 0)))
+            self.add_item(PageButton(+1, disabled=(page >= total_pages - 1)))
         self.add_item(BackButton())
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -303,6 +320,28 @@ class CategoryView(discord.ui.View):
             await interaction.response.send_message("This menu isn't yours — run `!shop` yourself.", ephemeral=True)
             return False
         return True
+
+
+class PageButton(discord.ui.Button):
+    def __init__(self, direction, disabled=False):
+        super().__init__(
+            label="Next ▶" if direction > 0 else "◀ Prev",
+            style=discord.ButtonStyle.secondary, disabled=disabled, row=4,
+        )
+        self.direction = direction
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        new_page = view.page + self.direction
+        items = [c for c in view.catalog if c["category"] == view.cat_key and c["enabled"]]
+        cat_view = CategoryView(view.cog, view.ctx, view.catalog, view.cat_key, items, page=new_page)
+        stats = await view.cog.sob_repo.get_user_stats(interaction.guild.id, interaction.user.id)
+        pic = _shop_picture(stats["sobs_alltime"], view.catalog, only_category=view.cat_key, page=new_page)
+        if pic is not None:
+            await interaction.response.edit_message(attachments=[pic], embed=None, view=cat_view)
+        else:
+            await interaction.response.edit_message(
+                embed=embeds.category_embed(view.cat_key, items), attachments=[], view=cat_view)
 
 
 class BackButton(discord.ui.Button):

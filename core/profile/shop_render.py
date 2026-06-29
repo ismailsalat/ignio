@@ -91,14 +91,50 @@ def _fit_name(d, text, max_w, start=21, lo=13):
     return text, f
 
 
-def make_shop_card(balance: int, grouped: dict, only_category: str | None = None) -> Image.Image:
-    """grouped: {category_key: [ {key,name,price,stackable}, ... ]}"""
+def make_shop_card(balance: int, grouped: dict, only_category: str | None = None,
+                   preview: int = 3, page: int = 0, per_page: int = 6) -> Image.Image:
+    """grouped: {category_key: [ {key,name,price,stackable,description} ]}
+
+    Overview (only_category=None): shows up to `preview` items per category with a
+    '+N more' hint and 'tap a category for the full list & details'.
+    Category view (only_category set): shows full items WITH descriptions, paginated
+    by `page`/`per_page`."""
     W = 860
     PAD = 40
-    cats = [only_category] if only_category else ["protection", "debuff", "buff", "server"]
-    cats = [c for c in cats if grouped.get(c)]
-    rows = sum(len(grouped[c]) for c in cats)
-    H = 120 + len(cats) * 40 + rows * 56 + 50
+
+    if only_category:
+        cats = [only_category] if grouped.get(only_category) else []
+        detail = True
+    else:
+        cats = [c for c in ["protection", "debuff", "buff", "server"] if grouped.get(c)]
+        detail = False
+
+    # build the row list, honoring preview/pagination
+    layout = []   # (kind, payload)
+    total_pages = 1
+    for cat in cats:
+        items = grouped[cat]
+        if detail:
+            total_pages = max(1, (len(items) + per_page - 1) // per_page)
+            page = max(0, min(page, total_pages - 1))
+            shown = items[page * per_page:(page + 1) * per_page]
+            layout.append(("header", cat))
+            for it in shown:
+                layout.append(("item_detail", it))
+        else:
+            layout.append(("header", cat))
+            for it in items[:preview]:
+                layout.append(("item", it))
+            extra = len(items) - preview
+            if extra > 0:
+                layout.append(("more", (cat, extra)))
+
+    # measure height
+    row_h = {"header": 40, "item": 56, "item_detail": 74, "more": 30}
+    body_h = sum(row_h[k] for k, _ in layout)
+    H = 116 + body_h + 50
+    if detail and total_pages > 1:
+        H += 26
 
     img = Image.new("RGBA", (W, H), BG + (255,))
     d = ImageDraw.Draw(img)
@@ -114,26 +150,55 @@ def make_shop_card(balance: int, grouped: dict, only_category: str | None = None
     d.text((W - PAD - bw + 18, 50), bal, font=bf, fill=SOFT)
 
     y = 116
-    for cat in cats:
-        col = CAT_COLORS.get(cat, SOFT)
-        d.text((PAD, y), CAT_LABELS.get(cat, cat.upper()), font=f_label(16), fill=col)
-        y += 34
-        for it in grouped[cat]:
-            d.rounded_rectangle([PAD, y, W - PAD, y + 48], radius=12, fill=PANEL)
-            _glyph(d, img, PAD + 8, y + 2, GLYPHS.get(it["key"], "dot"), col)
-            # price
+    cur_col = SOFT
+    for kind, payload in layout:
+        if kind == "header":
+            cur_col = CAT_COLORS.get(payload, SOFT)
+            label = CAT_LABELS.get(payload, payload.upper())
+            if detail and total_pages > 1:
+                label = f"{label}   ·   page {page + 1}/{total_pages}"
+            d.text((PAD, y), label, font=f_label(16), fill=cur_col)
+            y += 40
+        elif kind in ("item", "item_detail"):
+            it = payload
+            h = row_h[kind]
+            d.rounded_rectangle([PAD, y, W - PAD, y + h - 8], radius=12, fill=PANEL)
+            _glyph(d, img, PAD + 8, y + 2, GLYPHS.get(it["key"], "dot"), cur_col)
             stackable = it.get("stackable")
             price = f"{_fmt(it['price'])}/sec" if stackable else _fmt(it["price"])
             pf = f_num(20)
             pw = _text_w(d, price, pf)
             d.text((W - PAD - 18 - pw, y + 12), price, font=pf, fill=SOFT)
-            # name (auto-scaled to fit)
             name_max = (W - PAD - 18 - pw) - (PAD + 64) - 18
             fitted, nf = _fit_name(d, it["name"], name_max)
-            d.text((PAD + 64, y + 10), fitted, font=nf, fill=INK)
-            y += 56
-        y += 8
+            d.text((PAD + 64, y + (10 if kind == "item" else 8)), fitted, font=nf, fill=INK)
+            if kind == "item_detail":
+                desc = clean_name(it.get("description", "")) or it.get("description", "")
+                desc, df = _fit_desc(d, desc, W - PAD - (PAD + 64) - 18)
+                d.text((PAD + 64, y + 36), desc, font=df, fill=DIM)
+            y += h
+        elif kind == "more":
+            cat, extra = payload
+            d.text((PAD + 64, y + 4), f"+{extra} more — tap {cat.title()} below for the full list & details",
+                   font=f_reg(14), fill=DIM)
+            y += row_h["more"]
 
-    d.text((PAD, y), "Tap a category button below to buy", font=f_reg(15), fill=DIM)
+    if detail:
+        foot = "Tap an item button below to buy"
+        if total_pages > 1:
+            foot += "  ·  use Prev/Next for more"
+    else:
+        foot = "Tap a category button below for the full list & details"
+    d.text((PAD, y), foot, font=f_reg(15), fill=DIM)
+
     img.putalpha(_round_mask((W, H), 28))
     return img
+
+
+def _fit_desc(d, text, max_w, size=15):
+    f = f_reg(size)
+    if not text:
+        return "", f
+    while text and _text_w(d, text, f) > max_w:
+        text = text[:-2] + "…"
+    return text, f
