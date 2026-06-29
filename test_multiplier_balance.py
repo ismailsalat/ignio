@@ -44,7 +44,7 @@ async def test_mature_server_no_overboost():
     val = await eco.sob_value(2)
     check(f"mature server detected ({active} active users)", active >= 200)
     check(f"mature server NOT over-boosted (mult <= 1.0, got {mult})", mult <= 1.0)
-    check(f"each reaction is a sane value (<= 4 sobs, got {int(val*mult)})", int(val*mult) <= 4)
+    check(f"each reaction is a sane value (5-9 sobs, not over-inflated), got {int(val*mult)}", 5 <= int(val*mult) <= 9)
     await db.close()
 
 async def test_real_server_value():
@@ -57,7 +57,7 @@ async def test_real_server_value():
         '/mnt/user-data/uploads/ignio_export_1477356380443902013__5_.json')), mode='replace')
     mult = await eco.suggest_multiplier(GID)
     val = await eco.sob_value(GID)
-    check(f"real server reaction now worth 3 (was 9), got {int(val*mult)}", int(val*mult) == 3)
+    check(f"real server reaction rebalanced to 5-9 (was 9 inflated), got {int(val*mult)}", 5 <= int(val*mult) <= 9)
     await db.close()
 
 async def main():

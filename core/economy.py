@@ -33,11 +33,11 @@ ITEM_TIERS = {
 REF_FLOOR = 50              # reference never below this (new-server safety)
 
 # --- Earning formulas (tuned against real /plat data, economy stays ~flat) ---
-SOB_VALUE_PCT = 0.03       # a sob reaction is worth ~3% of reference...
-SOB_VALUE_FLOOR = 3        # ...but never less than 3 (so sobs always matter)
+SOB_VALUE_PCT = 0.035      # a sob reaction is worth ~3.5% of reference...
+SOB_VALUE_FLOOR = 5        # ...but never less than 5 (natural earning must matter)
 SNITCH_REWARD_PCT = 0.06   # snitch base reward ~6% of reference
 SNITCH_REWARD_FLOOR = 6
-SNITCH_STEAL_PCT = 0.50    # steal 50% of the wiped sobs (×boost if active)
+SNITCH_STEAL_PCT = 0.45    # steal 45% of the wiped pool (leave more with creators)
 SNITCH_TAX_PCT = 10        # % of snitch winnings -> treasury
 
 # --- Audit (two-tier, anti-gang-up) ---
@@ -115,8 +115,16 @@ class Economy:
         return await self.recompute_reference(guild_id)
 
     async def recompute_reference(self, guild_id: int) -> int:
-        """Recalculate the median-of-active reference and CACHE it. Returns it.
-        Called by !rebalance and the daily auto-rebalance."""
+        """Recalculate the reference balance used to scale earning + prices, and
+        CACHE it. Called by !rebalance and the daily auto-rebalance.
+
+        We use the 65th percentile of ACTIVE balances rather than the median.
+        On a competitive server, snitches/audits/steals constantly drain most
+        people to near-zero, which drags the median way down and makes natural
+        earning look tiny. The p65 tracks the *active* economy (the people who
+        actually hold sobs) so reactions and snitch rewards stay meaningful and
+        the leaderboard doesn't stagnate.
+        """
         db = await self._db()
         rows = await db.fetchall(
             "SELECT sobs_received_alltime AS s FROM sob_users "
@@ -128,9 +136,8 @@ class Economy:
         if not vals:
             ref = REF_FLOOR
         else:
-            mid = len(vals) // 2
-            median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
-            ref = max(REF_FLOOR, int(median))
+            idx = min(len(vals) - 1, int(len(vals) * 0.65))
+            ref = max(REF_FLOOR, int(vals[idx]))
         await self.repo.set_guild_setting(guild_id, REF_KEY, str(ref))
         return ref
 
