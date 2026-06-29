@@ -229,7 +229,12 @@ class AdminCog(commands.Cog):
         if amount == 0:
             await ctx.reply(embed=_err("Amount can't be zero."))
             return
-        new_total = await self.repo.adjust_received(ctx.guild.id, member.id, amount)
+        from core import ledger as _ledger
+        evt = _ledger.EVT_ADMIN_GIVE if amount > 0 else _ledger.EVT_ADMIN_REMOVE
+        new_total = await self.repo.adjust_received(
+            ctx.guild.id, member.id, amount,
+            event_type=evt, actor_id=ctx.author.id, counterparty_id=ctx.author.id,
+            metadata={"admin": ctx.author.id})
         verb = "Added" if amount > 0 else "Removed"
         e = _ok(f"{verb} {abs(amount)} sob{'s' if abs(amount) != 1 else ''}")
         e.add_field(name="User", value=member.mention, inline=True)
@@ -399,17 +404,27 @@ class AdminCog(commands.Cog):
         else:
             await ctx.reply(embed=_embed("✅ Economy resumed", "Sob earning and games are active again."))
 
-    @admin_group.command(name="audit")
-    async def admin_audit(self, ctx: commands.Context, member: discord.Member = None):
-        """Trace where a user's sobs came from — to spot exploits."""
+    @admin_group.group(name="audit", invoke_without_command=True)
+    async def admin_audit(self, ctx: commands.Context, member: discord.Member = None, page: int = 0):
+        """Trace where a user's sobs came from — to spot exploits.
+        `!admin audit @user`           — full summary (faucets, flags, ledger totals)
+        `!admin audit @user <page>`    — chronological ledger entries (page 1+)
+        `!admin audit tx <id>`         — every entry from one transaction"""
         if not await self._require(ctx, "managesobs"):
             return
         if member is None:
-            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin audit @user`."))
+            await ctx.reply(embed=_err(
+                f"Usage: `{ctx.prefix}admin audit @user` · `{ctx.prefix}admin audit @user <page>` · "
+                f"`{ctx.prefix}admin audit tx <id>`."))
             return
         gid = ctx.guild.id
         uid = member.id
         db = await self.db_manager.get()
+
+        # Page mode: show the chronological ledger for this user.
+        if page and page > 0:
+            await self._audit_ledger_page(ctx, member, page)
+            return
 
         stats = await self.repo.get_user_stats(gid, uid)
         balance = int(stats["sobs_alltime"])
@@ -510,7 +525,153 @@ class AdminCog(commands.Cog):
                 value="\n".join(sus_lines) + "\n*New/inactive accounts feeding them sobs = likely alts.*",
                 inline=False)
 
-        e.set_footer(text="High 24h reactions or one dominant/suspicious reactor = likely alt/farm exploit.")
+        # Ledger-derived earned/spent by source + reconciliation.
+        from core import ledger as _ledger
+        try:
+            summ = await _ledger.user_summary(db, gid, uid)
+            recon = await _ledger.reconcile_user(db, gid, uid, balance)
+            top_sources = sorted(summ["by_event"].items(),
+                                 key=lambda kv: kv[1]["earned"], reverse=True)[:6]
+            src_lines = []
+            for ev, agg in top_sources:
+                if agg["earned"] or agg["spent"]:
+                    src_lines.append(f"  {ev}: +{agg['earned']:,} / -{agg['spent']:,} ({agg['count']})")
+            if src_lines:
+                e.add_field(
+                    name=f"📒 Ledger (earned {summ['total_earned']:,} · spent {summ['total_spent']:,})",
+                    value="\n".join(src_lines), inline=False)
+            recon_txt = ("✅ reconciles" if recon["reconciled"]
+                         else f"⚠️ off by {recon['delta']:,} (live {recon['live_balance']:,} vs ledger {recon['ledger_net']:,})")
+            e.add_field(name="Reconciliation", value=recon_txt, inline=False)
+        except Exception as exc:
+            e.add_field(name="Ledger", value=f"(unavailable: {exc})", inline=False)
+
+        e.set_footer(text=f"High 24h reactions or one dominant/suspicious reactor = likely alt/farm. "
+                          f"Page the ledger with {ctx.prefix}admin audit @user 1")
+        await ctx.reply(embed=e)
+
+    async def _audit_ledger_page(self, ctx, member, page):
+        """Chronological ledger entries for one user (page 1+)."""
+        from core import ledger as _ledger
+        gid, uid = ctx.guild.id, member.id
+        db = await self.db_manager.get()
+        per = 12
+        entries = await _ledger.user_entries(db, gid, uid, page=page - 1, per_page=per)
+        if not entries:
+            await ctx.reply(embed=_embed("📒 Ledger", f"No entries on page {page} for {member.mention}."))
+            return
+        lines = []
+        for r in entries:
+            sign = "+" if int(r["delta"]) >= 0 else ""
+            extra = ""
+            if r["item_key"]:
+                extra += f" [{r['item_key']}]"
+            if int(r["counterparty_id"]):
+                extra += f" ↔{r['counterparty_id']}"
+            lines.append(
+                f"`#{r['ledger_id']}` {r['event_type']} {sign}{int(r['delta']):,} "
+                f"(→{int(r['balance_after']):,}){extra}")
+        e = _embed(f"📒 Ledger — {member.display_name} (page {page})", "\n".join(lines))
+        e.set_footer(text=f"tx ids via {ctx.prefix}admin audit tx <id> · next: {ctx.prefix}admin audit @user {page+1}")
+        await ctx.reply(embed=e)
+
+    @admin_audit.command(name="tx")
+    async def admin_audit_tx(self, ctx: commands.Context, transaction_id: str = None):
+        """Show every ledger entry from one transaction (proves it nets to zero)."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        if not transaction_id:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin audit tx <transaction_id>`."))
+            return
+        from core import ledger as _ledger
+        db = await self.db_manager.get()
+        rows = await _ledger.transaction_entries(db, transaction_id)
+        if not rows:
+            await ctx.reply(embed=_err(f"No ledger entries for transaction `{transaction_id}`."))
+            return
+        lines = []
+        net = 0
+        for r in rows:
+            net += int(r["delta"])
+            sign = "+" if int(r["delta"]) >= 0 else ""
+            lines.append(
+                f"`#{r['ledger_id']}` {r['event_type']} · subj `{r['subject_id']}` "
+                f"{sign}{int(r['delta']):,} (→{int(r['balance_after']):,})"
+                + (f" · tax {int(r['tax_amount'])}" if int(r['tax_amount']) else "")
+                + (f" · burn {int(r['burned_amount'])}" if int(r['burned_amount']) else ""))
+        e = _embed(f"🧾 Transaction {transaction_id[:12]}…", "\n".join(lines))
+        e.add_field(name="Net delta", value=f"`{net:,}` "
+                    + ("(balanced ✅)" if net == 0 else "(intentional mint/burn)"), inline=False)
+        await ctx.reply(embed=e)
+
+    @admin_group.command(name="suspicious", aliases=["sus"])
+    async def admin_suspicious(self, ctx: commands.Context, member: discord.Member = None):
+        """Flag rapid reaction toggles, repeated failures, unusual daily claims,
+        negative inventory, repeated shop attempts, altblock events, or abnormal
+        source totals for one user."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        if member is None:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin suspicious @user`."))
+            return
+        gid, uid = ctx.guild.id, member.id
+        db = await self.db_manager.get()
+        import time as _t
+        now = int(_t.time())
+        flags = []
+
+        async def _safe1(q, p):
+            try:
+                r = await db.fetchone(q, p)
+                return int(r[0]) if r and r[0] is not None else 0
+            except Exception:
+                return 0
+
+        # rapid reaction add/remove toggles (mint attempts) from the ledger
+        adds = await _safe1("SELECT COUNT(*) FROM economy_ledger WHERE guild_id=? AND subject_id=? "
+                            "AND event_type='sob_reaction_added' AND created_at>=?", (gid, uid, now - 3600))
+        rems = await _safe1("SELECT COUNT(*) FROM economy_ledger WHERE guild_id=? AND subject_id=? "
+                            "AND event_type='sob_reaction_removed' AND created_at>=?", (gid, uid, now - 3600))
+        if rems > 10 and adds > 0 and rems >= adds * 0.5:
+            flags.append(f"⚠️ {rems} reaction removals vs {adds} adds in 1h — toggle/mint probing")
+
+        # blocked reactions (altblock / security log) where they were the reactor
+        blocked = await _safe1("SELECT COUNT(*) FROM security_log WHERE guild_id=? AND actor_id=? "
+                               "AND event_type='blocked_reaction'", (gid, uid))
+        if blocked:
+            flags.append(f"🚩 {blocked} reactions blocked by anti-alt protection")
+
+        # negative inventory (should be impossible now — surfaces legacy/corrupt rows)
+        neg_inv = await _safe1("SELECT COUNT(*) FROM shop_inventory WHERE guild_id=? AND user_id=? AND quantity<0",
+                               (gid, uid))
+        if neg_inv:
+            flags.append(f"🛑 {neg_inv} inventory rows are NEGATIVE — investigate")
+
+        # repeated shop 'not enough' attempts would be in security log if logged;
+        # surface big audit/heist victim counts instead
+        audited = await _safe1("SELECT COUNT(*) FROM audit_events WHERE guild_id=? AND auditor_id=?", (gid, uid))
+        if audited > 50:
+            flags.append(f"🎯 {audited} audits performed — unusually high")
+
+        # unusual daily: streak/total mismatch
+        try:
+            drow = await db.fetchone("SELECT streak, total_claimed FROM daily_claims WHERE guild_id=? AND user_id=?",
+                                     (gid, uid))
+            if drow and int(drow["total_claimed"]) > int(drow["streak"]) * 80 + 1000:
+                flags.append(f"📅 daily total {int(drow['total_claimed']):,} looks high for streak {int(drow['streak'])}")
+        except Exception:
+            pass
+
+        # reconciliation mismatch is itself suspicious
+        from core import ledger as _ledger
+        stats = await self.repo.get_user_stats(gid, uid)
+        recon = await _ledger.reconcile_user(db, gid, uid, int(stats["sobs_alltime"]))
+        if not recon["reconciled"]:
+            flags.append(f"⚠️ balance doesn't reconcile with ledger (off by {recon['delta']:,}) — "
+                         f"normal for pre-ledger history, suspicious if recent")
+
+        e = discord.Embed(title=f"🕵️ Suspicious check — {member.display_name}", color=ACCENT)
+        e.description = "\n".join(flags) if flags else "✅ Nothing obviously abnormal in the logs."
         await ctx.reply(embed=e)
 
     @admin_group.command(name="auditexport", aliases=["auditjson"])

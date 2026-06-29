@@ -43,11 +43,53 @@ EXPORT_VERSION = 1
 # Tables that hold per-guild sob data, all keyed by guild_id.
 _GUILD_TABLES = ("sob_users", "sob_events", "sob_periods", "guild_settings",
                  "economy_snapshots", "daily_claims", "tax_events", "audit_events",
-                 "game_events", "shop_items", "shop_inventory", "active_effects")
+                 "game_events", "shop_items", "shop_inventory", "active_effects",
+                 "economy_ledger", "security_log", "game_matches", "user_activity")
+
+
+async def reconciliation_report(db: Database, guild_id: int) -> dict[str, Any]:
+    """Per-user balance-vs-ledger reconciliation for the whole guild.
+
+    For every user, compares their live ``sobs_received_alltime`` against the
+    sum of their ledger deltas. Users with history that predates the ledger will
+    legitimately not reconcile; what matters going forward is that NEW activity
+    keeps them balanced. The report lists any mismatches so an admin can see at
+    a glance whether the books balance.
+    """
+    rows = await db.fetchall(
+        "SELECT user_id, sobs_received_alltime FROM sob_users WHERE guild_id = ?",
+        (guild_id,),
+    )
+    ledger_rows = await db.fetchall(
+        "SELECT subject_id, COALESCE(SUM(delta),0) AS net FROM economy_ledger "
+        "WHERE guild_id = ? GROUP BY subject_id",
+        (guild_id,),
+    )
+    ledger_net = {int(r["subject_id"]): int(r["net"]) for r in ledger_rows}
+    mismatches = []
+    reconciled = 0
+    for r in rows:
+        uid = int(r["user_id"])
+        live = int(r["sobs_received_alltime"])
+        net = ledger_net.get(uid, 0)
+        if live == net:
+            reconciled += 1
+        else:
+            mismatches.append({"user_id": uid, "live_balance": live,
+                               "ledger_net": net, "delta": live - net})
+    mismatches.sort(key=lambda m: abs(m["delta"]), reverse=True)
+    return {
+        "users_total": len(rows),
+        "users_reconciled": reconciled,
+        "users_mismatched": len(mismatches),
+        "mismatches": mismatches[:200],  # cap the report size
+    }
 
 
 async def export_guild(db: Database, guild_id: int) -> dict[str, Any]:
-    """Return a JSON-serializable dict containing all sob data for one guild."""
+    """Return a JSON-serializable dict containing all sob data for one guild,
+    including the full economy ledger, security log, game escrow history and a
+    balance-vs-ledger reconciliation report."""
     tables: dict[str, list[dict[str, Any]]] = {}
     for table in _GUILD_TABLES:
         try:
@@ -59,11 +101,33 @@ async def export_guild(db: Database, guild_id: int) -> dict[str, Any]:
             # table may not exist yet on older DBs — skip gracefully
             tables[table] = []
 
+    # per-user earning/spending summary derived from the ledger
+    per_user_summary: list[dict[str, Any]] = []
+    try:
+        srows = await db.fetchall(
+            "SELECT subject_id, "
+            "COALESCE(SUM(CASE WHEN delta>0 THEN delta ELSE 0 END),0) AS earned, "
+            "COALESCE(SUM(CASE WHEN delta<0 THEN -delta ELSE 0 END),0) AS spent, "
+            "COALESCE(SUM(delta),0) AS net, COUNT(*) AS entries "
+            "FROM economy_ledger WHERE guild_id=? GROUP BY subject_id",
+            (guild_id,),
+        )
+        per_user_summary = [dict(r) for r in srows]
+    except Exception:
+        per_user_summary = []
+
+    try:
+        recon = await reconciliation_report(db, guild_id)
+    except Exception:
+        recon = {}
+
     return {
         "ignio_export_version": EXPORT_VERSION,
         "guild_id": int(guild_id),
         "exported_at": int(time.time()),
         "tables": tables,
+        "per_user_summary": per_user_summary,
+        "reconciliation": recon,
     }
 
 
