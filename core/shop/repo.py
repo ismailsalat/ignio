@@ -52,6 +52,13 @@ class ShopRepo:
                 tax_pct = 0
 
         catalog: list[dict[str, Any]] = []
+        # admin disable controls (comma-separated lists in guild_settings)
+        dis_items_raw = await self.sob_repo.get_guild_setting(guild_id, "shop:disabled_items") or ""
+        dis_cats_raw = await self.sob_repo.get_guild_setting(guild_id, "shop:disabled_categories") or ""
+        disabled_items = {x.strip().lower() for x in dis_items_raw.split(",") if x.strip()}
+        disabled_cats = {x.strip().lower() for x in dis_cats_raw.split(",") if x.strip()}
+        shop_off = (await self.sob_repo.get_guild_setting(guild_id, "shop:enabled")) == "0"
+
         # built-ins first (with any overrides applied)
         from core.shop.catalog import ENFORCED_MECHANICS
         for key, base in BUILTIN_ITEMS.items():
@@ -77,6 +84,9 @@ class ShopRepo:
                     item["icon"] = o["icon"]
                 if o["description"]:
                     item["description"] = o["description"]
+            # admin disable: whole shop, this category, or this specific item
+            if shop_off or key in disabled_items or str(item.get("category", "")).lower() in disabled_cats:
+                item["enabled"] = False
             # tax-included total (built-in PvP items are taxed on top)
             item["_final_price"] = item["price"] + int(item["price"] * tax_pct / 100)
             catalog.append(item)
@@ -85,14 +95,18 @@ class ShopRepo:
         for key, o in overrides.items():
             if key in BUILTIN_ITEMS:
                 continue
+            cat = (o["category"] or "server")
+            enabled = bool(o["enabled"])
+            if shop_off or key.lower() in disabled_items or cat.lower() in disabled_cats:
+                enabled = False
             catalog.append({
                 "key": key,
                 "name": o["name"],
                 "icon": o["icon"] or "📦",
-                "category": o["category"] or "server",
+                "category": cat,
                 "price": int(o["price"]),
                 "stock": int(o["stock"]),
-                "enabled": bool(o["enabled"]),
+                "enabled": enabled,
                 "description": o["description"] or "",
             })
         return catalog

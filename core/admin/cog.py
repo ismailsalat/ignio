@@ -404,6 +404,130 @@ class AdminCog(commands.Cog):
         else:
             await ctx.reply(embed=_embed("✅ Economy resumed", "Sob earning and games are active again."))
 
+    # ------------------------------------------------------------------
+    # Economy / shop controls (disable items, categories, whole shop)
+    # ------------------------------------------------------------------
+    def _csv_set(self, raw):
+        return {x.strip().lower() for x in (raw or "").split(",") if x.strip()}
+
+    async def _save_csv(self, gid, key, items):
+        await self.repo.set_guild_setting(gid, key, ",".join(sorted(items)))
+
+    @admin_group.command(name="shop")
+    async def admin_shop(self, ctx: commands.Context, state: str = None):
+        """Turn the WHOLE shop on/off. `!admin shop off` hides every item from buying."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            off = (await self.repo.get_guild_setting(gid, "shop:enabled")) == "0"
+            await ctx.reply(embed=_embed(
+                "Shop status",
+                f"The shop is currently **{'OFF 🔒' if off else 'ON ✅'}**.\n"
+                f"`{ctx.prefix}admin shop off` to close · `{ctx.prefix}admin shop on` to open."))
+            return
+        on = state.lower() in ("on", "open", "yes", "1", "enable", "enabled")
+        await self.repo.set_guild_setting(gid, "shop:enabled", "1" if on else "0")
+        await ctx.reply(embed=_embed(
+            "🛒 Shop " + ("opened ✅" if on else "closed 🔒"),
+            "Players can buy again." if on else "Nobody can buy any item until you reopen it."))
+
+    @admin_group.command(name="item", aliases=["disableitem"])
+    async def admin_item(self, ctx: commands.Context, state: str = None, *, item: str = None):
+        """Disable/enable a single shop item.
+        `!admin item disable audit` · `!admin item enable audit` · `!admin item list`"""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        disabled = self._csv_set(await self.repo.get_guild_setting(gid, "shop:disabled_items"))
+        if state in (None, "list"):
+            txt = ", ".join(sorted(disabled)) if disabled else "none"
+            await ctx.reply(embed=_embed(
+                "Disabled items", f"Currently disabled: **{txt}**\n"
+                f"`{ctx.prefix}admin item disable <key>` · `{ctx.prefix}admin item enable <key>`"))
+            return
+        if not item:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin item disable <item key>`."))
+            return
+        key = item.strip().lower()
+        if state.lower() in ("disable", "off", "hide", "0"):
+            disabled.add(key)
+            await self._save_csv(gid, "shop:disabled_items", disabled)
+            await ctx.reply(embed=_embed("🚫 Item disabled", f"**{key}** can no longer be bought or used."))
+        elif state.lower() in ("enable", "on", "show", "1"):
+            disabled.discard(key)
+            await self._save_csv(gid, "shop:disabled_items", disabled)
+            await ctx.reply(embed=_embed("✅ Item enabled", f"**{key}** is buyable again."))
+        else:
+            await ctx.reply(embed=_err(f"Use `disable` or `enable`. Example: `{ctx.prefix}admin item disable audit`."))
+
+    @admin_group.command(name="category", aliases=["cat", "disablecat"])
+    async def admin_category(self, ctx: commands.Context, state: str = None, *, category: str = None):
+        """Disable/enable a whole shop category (protection, debuff, buff, server).
+        `!admin category disable debuff` turns off all audits/freezes/etc at once."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        disabled = self._csv_set(await self.repo.get_guild_setting(gid, "shop:disabled_categories"))
+        if state in (None, "list"):
+            txt = ", ".join(sorted(disabled)) if disabled else "none"
+            await ctx.reply(embed=_embed(
+                "Disabled categories", f"Currently disabled: **{txt}**\n"
+                f"Categories: protection, debuff, buff, server\n"
+                f"`{ctx.prefix}admin category disable <name>`"))
+            return
+        if not category:
+            await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin category disable <name>`."))
+            return
+        cat = category.strip().lower()
+        if state.lower() in ("disable", "off", "hide", "0"):
+            disabled.add(cat)
+            await self._save_csv(gid, "shop:disabled_categories", disabled)
+            await ctx.reply(embed=_embed("🚫 Category disabled",
+                f"All **{cat}** items are now off (can't be bought or used)."))
+        elif state.lower() in ("enable", "on", "show", "1"):
+            disabled.discard(cat)
+            await self._save_csv(gid, "shop:disabled_categories", disabled)
+            await ctx.reply(embed=_embed("✅ Category enabled", f"**{cat}** items are back."))
+        else:
+            await ctx.reply(embed=_err("Use `disable` or `enable`."))
+
+    @admin_group.command(name="auditcap")
+    async def admin_auditcap(self, ctx: commands.Context, value: int = None):
+        """Max audits ONE person can perform per day. `!admin auditcap 5` (0 = unlimited)."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if value is None:
+            from core.economy import AUDIT_DAILY_CAP_DEFAULT
+            cur = await self.repo.get_guild_setting(gid, "economy:audit_daily_cap")
+            cur = cur if cur is not None else str(AUDIT_DAILY_CAP_DEFAULT)
+            await ctx.reply(embed=_embed("Audit daily cap",
+                f"Each person can do **{cur}** audits/day.\n"
+                f"`{ctx.prefix}admin auditcap <number>` to change (0 = unlimited)."))
+            return
+        await self.repo.set_guild_setting(gid, "economy:audit_daily_cap", str(max(0, value)))
+        msg = "unlimited" if value <= 0 else f"{value} per day"
+        await ctx.reply(embed=_embed("✅ Audit cap set", f"Each person can now do **{msg}** audits."))
+
+    @admin_group.command(name="auditcd", aliases=["auditcooldown"])
+    async def admin_auditcd(self, ctx: commands.Context, seconds: int = None):
+        """Cooldown between a person's audits, in seconds. `!admin auditcd 1800` = 30 min."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if seconds is None:
+            from core.economy import AUDIT_COOLDOWN_DEFAULT
+            cur = await self.repo.get_guild_setting(gid, "economy:audit_cooldown_secs")
+            cur = int(cur) if cur is not None else AUDIT_COOLDOWN_DEFAULT
+            await ctx.reply(embed=_embed("Audit cooldown",
+                f"Currently **{cur//60}m {cur%60}s** between audits.\n"
+                f"`{ctx.prefix}admin auditcd <seconds>` to change (0 = no cooldown)."))
+            return
+        await self.repo.set_guild_setting(gid, "economy:audit_cooldown_secs", str(max(0, seconds)))
+        msg = "no cooldown" if seconds <= 0 else f"{seconds//60}m {seconds%60}s"
+        await ctx.reply(embed=_embed("✅ Audit cooldown set", f"Now **{msg}** between audits."))
+
     @admin_group.group(name="audit", invoke_without_command=True)
     async def admin_audit(self, ctx: commands.Context, member: discord.Member = None, page: int = 0):
         """Trace where a user's sobs came from — to spot exploits.
