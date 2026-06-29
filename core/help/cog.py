@@ -30,15 +30,52 @@ def category_embed(cat: str, prefix: str, is_admin: bool, is_owner: bool) -> dis
     if not cmds:
         e.description = "Nothing here."
         return e
+
+    # The admin list is large — break it into clean, scannable sub-sections
+    # instead of one long wall of text.
+    if cat == "admin":
+        groups = {
+            "Economy controls": ["admin freeze", "admin shop", "admin item", "admin category",
+                                  "admin auditcap", "admin auditcd", "admin altblock", "tax",
+                                  "multiplier", "rate set", "rebalance"],
+            "Audit & investigation": ["admin audit", "admin audit tx", "admin suspicious",
+                                       "admin weekly", "admin export", "admin auditexport"],
+            "Sobs & users": ["admin givesob", "admin givetoken", "admin reset", "admin recount",
+                             "admin threshold", "admin emoji", "treasury", "treasury give"],
+            "Shop setup": ["shop additem", "shop setstock", "shop removeitem",
+                           "shop setchannel", "shop setrole", "shop boostmult"],
+            "Server & access": ["admin profile", "admin config", "admin whoami", "perms",
+                                "disable", "enable", "commandconfig", "announce",
+                                "admin stats", "admin servers", "admin import"],
+        }
+        by_name = {c["name"]: c for c in cmds}
+        used = set()
+        for title, names in groups.items():
+            lines = []
+            for n in names:
+                c = by_name.get(n)
+                if not c:
+                    continue
+                used.add(n)
+                usage = c.get("usage") or c["name"]
+                lines.append(f"`{prefix}{usage}` — {c['desc']}")
+            if lines:
+                e.add_field(name=title, value="\n".join(lines), inline=False)
+        # any admin command not placed above (safety net so nothing is hidden)
+        leftover = [c for c in cmds if c["name"] not in used]
+        if leftover:
+            lines = [f"`{prefix}{c.get('usage') or c['name']}` — {c['desc']}" for c in leftover]
+            e.add_field(name="More", value="\n".join(lines), inline=False)
+        e.set_footer(text="All admin-only. Most-used: !admin auditcap · !admin item disable <key> · !admin freeze")
+        return e
+
     lines = []
     for c in cmds:
         usage = c.get("usage") or c["name"]
         tag = " 🛡️" if c.get("admin") or c.get("owner") else ""
         lines.append(f"`{prefix}{usage}`{tag} — {c['desc']}")
     e.description = "\n".join(lines)
-    if cat == "admin":
-        e.set_footer(text="🛡️ = admin only · everyone can use the rest")
-    elif any(c.get("admin") for c in cmds):
+    if any(c.get("admin") for c in cmds):
         e.set_footer(text="🛡️ = admin only")
     return e
 

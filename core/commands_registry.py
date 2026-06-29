@@ -32,6 +32,7 @@ COMMANDS = [
     {"name": "sob", "cat": "sobs", "desc": "Your profile card", "usage": "sob"},
     {"name": "sob @user", "cat": "sobs", "desc": "Another member's profile card", "usage": "sob @user"},
     {"name": "sob lb", "cat": "sobs", "desc": "Server leaderboard", "usage": "sob lb"},
+    {"name": "sob stats", "cat": "sobs", "desc": "Where your sobs come from + your audit allowance (picture)", "usage": "sob stats"},
     {"name": "ss", "cat": "sobs", "desc": "Reply to a message to wipe its sobs (uses a token)", "usage": "ss"},
 
     # ---- Profile customization ----
@@ -68,9 +69,33 @@ COMMANDS = [
     {"name": "admin recount", "cat": "admin", "desc": "Recount all sobs", "usage": "admin recount", "admin": True},
     {"name": "admin threshold", "cat": "admin", "desc": "Set sobs-per-token", "usage": "admin threshold <n>", "admin": True},
     {"name": "admin emoji", "cat": "admin", "desc": "Manage accepted sob emojis", "usage": "admin emoji list|add|remove", "admin": True},
+    {"name": "admin whoami", "cat": "admin", "desc": "Show your admin/owner status & perms", "usage": "admin whoami", "admin": True},
+    {"name": "admin config", "cat": "admin", "desc": "This server's full sob config", "usage": "admin config", "admin": True},
+    {"name": "admin stats", "cat": "admin", "desc": "Bot-wide stats (owner)", "usage": "admin stats", "owner": True},
+    {"name": "admin servers", "cat": "admin", "desc": "List servers the bot is in (owner)", "usage": "admin servers", "owner": True},
+
+    # ---- Admin: economy controls (disable / limit) ----
+    {"name": "admin freeze", "cat": "admin", "desc": "Emergency: pause ALL earning/economy server-wide", "usage": "admin freeze on|off", "admin": True},
+    {"name": "admin shop", "cat": "admin", "desc": "Open/close the WHOLE shop", "usage": "admin shop on|off", "admin": True},
+    {"name": "admin item", "cat": "admin", "desc": "Disable/enable a single shop item", "usage": "admin item disable|enable <key>", "admin": True},
+    {"name": "admin category", "cat": "admin", "desc": "Disable/enable a whole shop category", "usage": "admin category disable|enable <name>", "admin": True},
+    {"name": "admin auditcap", "cat": "admin", "desc": "Max audits one person can do per day", "usage": "admin auditcap <n>", "admin": True},
+    {"name": "admin auditcd", "cat": "admin", "desc": "Cooldown between a person's audits (seconds)", "usage": "admin auditcd <seconds>", "admin": True},
+    {"name": "admin altblock", "cat": "admin", "desc": "Block/flag alt-farm reactions", "usage": "admin altblock on|off", "admin": True},
+
+    # ---- Admin: audit & investigation ----
+    {"name": "admin audit", "cat": "admin", "desc": "Trace where a user's sobs came from + reconciliation", "usage": "admin audit @user [page]", "admin": True},
+    {"name": "admin audit tx", "cat": "admin", "desc": "Show every entry in one transaction", "usage": "admin audit tx <id>", "admin": True},
+    {"name": "admin suspicious", "cat": "admin", "desc": "Flag exploit-like behavior for a user", "usage": "admin suspicious @user", "admin": True},
+    {"name": "admin weekly", "cat": "admin", "desc": "Weekly reaction farm-pair report", "usage": "admin weekly", "admin": True},
+    {"name": "admin export", "cat": "admin", "desc": "Export ALL economy data (ledger, security, reconciliation)", "usage": "admin export", "admin": True},
+    {"name": "admin auditexport", "cat": "admin", "desc": "Full JSON of one user for analysis", "usage": "admin auditexport @user", "admin": True},
+    {"name": "admin import", "cat": "admin", "desc": "Import an economy export (owner)", "usage": "admin import", "owner": True},
+
+    # ---- Admin: shop management ----
     {"name": "shop additem", "cat": "admin", "desc": "Add a server item (price in sobs or $)", "usage": "shop additem <key> <price|$X> <name>", "admin": True},
     {"name": "shop setstock", "cat": "admin", "desc": "Set item stock (-1 = unlimited)", "usage": "shop setstock <key> <n>", "admin": True},
-    {"name": "shop removeitem", "cat": "admin", "desc": "Disable a server item", "usage": "shop removeitem <key>", "admin": True},
+    {"name": "shop removeitem", "cat": "admin", "desc": "Remove a custom server item", "usage": "shop removeitem <key>", "admin": True},
     {"name": "shop setchannel", "cat": "admin", "desc": "Where claims are posted", "usage": "shop setchannel #channel", "admin": True},
     {"name": "shop setrole", "cat": "admin", "desc": "Who gets pinged on a claim", "usage": "shop setrole @role", "admin": True},
     {"name": "shop boostmult", "cat": "admin", "desc": "Set the boost steal multiplier", "usage": "shop boostmult <n>", "admin": True},
