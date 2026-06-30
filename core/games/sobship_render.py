@@ -63,19 +63,40 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
     title = "Sob-Ship"
     d.text((W // 2 - _text_w(d, title, f_title(40)) // 2, 26), title, font=f_title(40), fill=INK)
 
-    # the two names
+    # the two names — robust against very long Discord display names (up to 32
+    # chars each) and very short ones. Each name is independently truncated to a
+    # pixel budget, and the font shrinks a step if the pair still won't fit.
     na = clean_name(name_a) or "someone"
     nb = clean_name(name_b) or "someone"
-    pair = f"{na}  ×  {nb}"
-    pf = f_reg(24)
-    # ellipsize the pair to fit
-    while _text_w(d, pair, pf) > W - 80 and (len(na) > 6 or len(nb) > 6):
-        if len(na) >= len(nb):
-            na = na[:-1]
-        else:
-            nb = nb[:-1]
-        pair = f"{na}…  ×  {nb}…"
-    d.text((W // 2 - _text_w(d, pair, pf) // 2, 78), pair, font=pf, fill=DIM)
+
+    def _truncate(draw, text, font, max_w):
+        if _text_w(draw, text, font) <= max_w:
+            return text
+        ell = "…"
+        while text and _text_w(draw, text + ell, font) > max_w:
+            text = text[:-1]
+        return (text + ell) if text else ell
+
+    sep = "  ×  "
+    avail = W - 64                       # total horizontal budget for the line
+    chosen_font = None
+    fa = fb = na2 = nb2 = None
+    for size in (24, 22, 20, 18):
+        f = f_reg(size)
+        sep_w = _text_w(d, sep, f)
+        per = (avail - sep_w) / 2         # equal pixel budget per name
+        a_fit = _truncate(d, na, f, per)
+        b_fit = _truncate(d, nb, f, per)
+        if _text_w(d, a_fit + sep + b_fit, f) <= avail:
+            chosen_font, na2, nb2 = f, a_fit, b_fit
+            break
+    if chosen_font is None:               # absolute fallback
+        chosen_font = f_reg(18)
+        na2 = _truncate(d, na, chosen_font, (avail - _text_w(d, sep, chosen_font)) / 2)
+        nb2 = _truncate(d, nb, chosen_font, (avail - _text_w(d, sep, chosen_font)) / 2)
+
+    pair = na2 + sep + nb2
+    d.text((W // 2 - _text_w(d, pair, chosen_font) // 2, 80), pair, font=chosen_font, fill=DIM)
 
     # big heart that fills bottom-up
     cx, cy, size = W // 2, 215, 150

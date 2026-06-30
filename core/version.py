@@ -8,12 +8,22 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Steal & Ship Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.4.1",
+        "date": "2026-06-29",
+        "title": "Sob-Ship UI fix",
+        "notes": [
+            "!sobship now handles every name size cleanly — long Discord names are",
+            "  truncated per-name and the font shrinks a step so two names always fit",
+            "Very short names, emoji, and exotic glyphs all render without overflow",
+        ],
+    },
     {
         "version": "1.4.0",
         "date": "2026-06-29",

@@ -18,6 +18,19 @@ def main():
     data = buf.read()
     check("gif renders and is a real GIF", data[:6] in (b"GIF87a", b"GIF89a"))
     check("gif score matches static score", s2 == ship_score(7, 8))
+    # UI must handle every name size without crashing or overflowing
+    for a, b in [
+        ("xXx_TheLegendaryDragonSlayer9000_xXx", "AnotherSuperLongNicknameThatIsHuge"),
+        ("a", "b"),
+        ("😭🔥emoji😭🔥", "ceo shukri𒅒𒅒"),
+    ]:
+        try:
+            img, sc = make_sobship_static(a, b, 1, 2)
+            ok = img is not None and 0 <= sc <= 100
+        except Exception:
+            ok = False
+        check(f"renders cleanly for names ({a[:10]}.., {b[:10]}..)", ok)
+
     print(f"\n  RESULT: {len(PASS)} passed, {len(FAIL)} failed")
     if FAIL: print("  FAILURES:", FAIL); sys.exit(1)
 
