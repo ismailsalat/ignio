@@ -148,20 +148,30 @@ def _zoom_for_type(t: str, bbox=None) -> int:
 
 
 async def static_map_png(lat: float, lon: float, zoom: int) -> bytes | None:
-    """Build a small static map by stitching OSM tiles around the center."""
+    """Build a small static map centered exactly on (lat, lon) with a pin.
+
+    Stitches a 3x3 block of OSM tiles, then crops a window centered on the
+    EXACT fractional pixel position of the point (not the tile corner), so the
+    marker and the map are both perfectly centered.
+    """
     import math
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
     n = 2 ** zoom
     xt = (lon + 180.0) / 360.0 * n
     yt = (1.0 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2.0 * n
     cx, cy = int(xt), int(yt)
-    try:
-        from PIL import Image
-    except Exception:
-        return None
-    canvas = Image.new("RGB", (768, 512))
+    fx, fy = xt - cx, yt - cy  # fractional position inside the center tile
+
+    # 5x4 tile grid; center tile (cx,cy) is pasted at (512,256) so there's
+    # always slack to center the crop on the point without clamping
+    canvas = Image.new("RGB", (1280, 1024), (233, 229, 220))
+    base_x, base_y = 2, 2  # center tile offset in the grid
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0):
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1):
                 tx, ty = cx + dx, cy + dy
                 if not (0 <= tx < n and 0 <= ty < n):
                     continue
@@ -172,17 +182,27 @@ async def static_map_png(lat: float, lon: float, zoom: int) -> bytes | None:
                             continue
                         raw = await r.read()
                     tile = Image.open(io.BytesIO(raw)).convert("RGB")
-                    px = (dx + 1) * 256
-                    py = (dy + 1) * 256
-                    canvas.paste(tile, (px, py))
+                    canvas.paste(tile, ((dx + base_x) * 256, (dy + base_y) * 256))
                 except Exception:
                     continue
-    # crop to a centered 640x400 view with a marker
-    from PIL import ImageDraw
-    crop = canvas.crop((64, 56, 704, 456))
+
+    # exact pixel of the point on the canvas
+    point_x = base_x * 256 + fx * 256
+    point_y = base_y * 256 + fy * 256
+    cw, ch = 640, 400
+    left = int(point_x - cw / 2)
+    top = int(point_y - ch / 2)
+    left = max(0, min(1280 - cw, left))
+    top = max(0, min(1024 - ch, top))
+    crop = canvas.crop((left, top, left + cw, top + ch))
+
+    # marker at the point's position within the crop
+    mx = int(point_x - left)
+    my = int(point_y - top)
     d = ImageDraw.Draw(crop)
-    mx, my = 320, 200
-    d.ellipse([mx - 8, my - 8, mx + 8, my + 8], fill=(228, 70, 70), outline=(255, 255, 255), width=2)
+    # pin: teardrop-ish (circle + stem) so it clearly marks the spot
+    d.ellipse([mx - 9, my - 9, mx + 9, my + 9], fill=(228, 70, 70), outline=(255, 255, 255), width=3)
+    d.ellipse([mx - 3, my - 3, mx + 3, my + 3], fill=(255, 255, 255))
     buf = io.BytesIO()
     crop.save(buf, format="PNG")
     buf.seek(0)
@@ -224,48 +244,66 @@ async def translate(text: str, target_lang: str):
 # XRAY — follow redirects with aiohttp (no key)
 # --------------------------------------------------------------------------- #
 async def xray(url: str):
-    """Follow redirects safely; return {final, hops, content_type, status}."""
+    """Follow HTTP redirects safely and report the final destination.
+
+    Uses manual redirect following so every hop (including the final one) is
+    re-validated against the SSRF guard before we ever connect to it. Counts
+    redirects accurately and never claims a redirect that didn't happen.
+    """
+    from urllib.parse import urljoin
     safe, reason = is_safe_url(url)
     if not safe:
         return {"blocked": reason}
-    hops = 0
-    final = url
+
+    REDIRECT_CODES = (301, 302, 303, 307, 308)
+    MAX_REDIRECTS = 5
+    cur = url
+    history = []          # URLs we were redirected FROM
     ctype = "unknown"
     status = None
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
-            # manual redirect follow with re-validation each hop (SSRF safe)
-            cur = url
-            for _ in range(6):
-                ok, _r = is_safe_url(cur)
+            for _ in range(MAX_REDIRECTS + 1):
+                # re-validate EVERY hop before connecting (SSRF / DNS rebinding)
+                ok, why = is_safe_url(cur)
                 if not ok:
-                    return {"blocked": _r, "hops": hops}
+                    return {"blocked": why, "hops": len(history), "final": cur}
                 async with s.get(cur, allow_redirects=False, headers=_UA) as r:
                     status = r.status
-                    ctype = (r.headers.get("Content-Type") or "unknown").split(";")[0]
-                    if r.status in (301, 302, 303, 307, 308) and "Location" in r.headers:
-                        nxt = r.headers["Location"]
-                        if nxt.startswith("/"):
-                            from urllib.parse import urljoin
-                            nxt = urljoin(cur, nxt)
+                    ctype = (r.headers.get("Content-Type") or "unknown").split(";")[0].strip()
+                    loc = r.headers.get("Location")
+                    if status in REDIRECT_CODES and loc:
+                        nxt = urljoin(cur, loc)   # handles relative AND absolute
+                        if nxt == cur:
+                            break                  # self-redirect guard
+                        history.append(cur)
                         cur = nxt
-                        hops += 1
-                        final = cur
                         continue
-                    final = cur
                     break
+            else:
+                # hit the redirect cap
+                return {"final": cur, "hops": len(history), "content_type": ctype,
+                        "kind": _ctype_kind(ctype), "status": status, "capped": True}
     except Exception:
-        pass
-    kind = "Unknown"
+        # network error — report what we have, don't crash
+        return {"final": cur, "hops": len(history), "content_type": ctype,
+                "kind": _ctype_kind(ctype), "status": status, "error": True}
+
+    return {"final": cur, "hops": len(history), "content_type": ctype,
+            "kind": _ctype_kind(ctype), "status": status}
+
+
+def _ctype_kind(ctype: str) -> str:
+    ctype = (ctype or "").lower()
     if "video" in ctype:
-        kind = "Video"
-    elif "image" in ctype:
-        kind = "Image"
-    elif "html" in ctype:
-        kind = "Web page"
-    elif "json" in ctype or "text" in ctype:
-        kind = "Text/Data"
-    return {"final": final, "hops": hops, "content_type": ctype, "kind": kind, "status": status}
+        return "Video"
+    if "image" in ctype:
+        return "Image"
+    if "html" in ctype:
+        return "Web page"
+    if "json" in ctype or "text" in ctype:
+        return "Text/Data"
+    return "Unknown"
 
 
 # --------------------------------------------------------------------------- #
@@ -332,10 +370,17 @@ async def llm_complete(system: str, user: str, max_tokens: int = 400) -> str | N
                                        {"role": "user", "content": user}]},
                 ) as r:
                     if r.status != 200:
+                        # log status + short body (NEVER the key/headers) for debugging
+                        try:
+                            body = (await r.text())[:300]
+                        except Exception:
+                            body = ""
+                        print(f"[Ignio][LLM] OpenAI {r.status} for model '{model}': {body}")
                         return None
                     data = await r.json()
                     choices = data.get("choices", [])
                     if not choices:
+                        print("[Ignio][LLM] OpenAI returned no choices.")
                         return None
                     return (choices[0].get("message", {}).get("content") or "").strip()
     except Exception:

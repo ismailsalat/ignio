@@ -90,7 +90,11 @@ class UtilitiesCog(commands.Cog):
         async for m in channel.history(limit=cap, after=after, oldest_first=True):
             if m.author.bot or not m.content:
                 continue
-            msgs.append(m.content)
+            c = m.content.strip()
+            # skip obvious command spam (any common prefix) so it doesn't pollute the summary
+            if c[:1] in "!?./$%&>" and len(c) < 40:
+                continue
+            msgs.append(c)
         return msgs
 
     async def _catchup_window(self, ctx, working, window):
@@ -102,9 +106,13 @@ class UtilitiesCog(commands.Cog):
         msgs = await self._read_recent(ctx.channel, minutes, 120)
         if not msgs:
             await working.edit(embed=_compact(f"Catchup — last {window}",
-                                              "Nothing much happened here recently."))
+                                              f"Nothing important was said in the last {window}."))
             return
         summary = await self._summarize_chat(msgs, window)
+        if summary is None:
+            await working.edit(embed=_compact("Catchup",
+                "Catchup could not run right now. An admin can check the bot logs.", WARN))
+            return
         await working.edit(embed=_compact(f"Catchup — last {window}", summary))
 
     async def _catchup_reply(self, ctx, working):
@@ -132,10 +140,15 @@ class UtilitiesCog(commands.Cog):
             await working.edit(embed=_compact("What happened here", "Not enough nearby context to tell."))
             return
         summary = await self._summarize_chat(msgs, "around that message", reply=True)
+        if summary is None:
+            await working.edit(embed=_compact("Catchup",
+                "Catchup could not run right now. An admin can check the bot logs.", WARN))
+            return
         await working.edit(embed=_compact("What happened here", summary))
 
     async def _summarize_chat(self, msgs, window, reply=False):
-        """Summarize via LLM provider if configured; else a clean fallback."""
+        """Summarize via the configured LLM. Returns the summary text, or None on
+        failure (the caller shows a clean error + we log the real reason)."""
         if not P.llm_key():
             return ("• Smart summaries need an AI provider that isn't set up yet.\n"
                     "• Ask an admin to set `UTIL_LLM_API_KEY` to enable this.\n"
@@ -151,8 +164,18 @@ class UtilitiesCog(commands.Cog):
                       "main topic, what changed, any important link/event, the current "
                       "joke/debate, any unanswered question. Neutral, concise, no usernames.")
             prompt = f"Recent messages (last {window}, oldest first):\n{joined}"
-        out = await P.llm_complete(system, prompt, max_tokens=380)
-        return out or "• I couldn't summarize that right now."
+        try:
+            out = await P.llm_complete(system, prompt, max_tokens=380)
+        except Exception as ex:
+            # log the real reason WITHOUT any keys/headers (llm_complete never logs them)
+            print(f"[Ignio][Catchup] LLM call raised: {type(ex).__name__}: {ex}")
+            return None
+        if not out:
+            print(f"[Ignio][Catchup] LLM returned no text "
+                  f"(provider={P._llm_provider()}, msgs={len(msgs)}). "
+                  f"Check UTIL_LLM_API_KEY / model name / quota.")
+            return None
+        return out
 
     # ------------------------------------------------------------------ #
     # !tldr
@@ -224,8 +247,10 @@ class UtilitiesCog(commands.Cog):
             except Exception:
                 target = None
         if not target:
-            await ctx.reply(embed=_compact("Song", "I could not access usable audio from this post."),
-                            allowed_mentions=NONE)
+            await ctx.reply(embed=_compact("Song",
+                "Reply **directly to a video, audio file, or supported clip** "
+                "(or pass a link) so I can listen for the song.", WARN),
+                allowed_mentions=NONE)
             return
         working = await ctx.reply(embed=_compact("Song", "Listening…"), allowed_mentions=NONE)
         try:
@@ -392,35 +417,58 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !translate
     # ------------------------------------------------------------------ #
-    @commands.command(name="translate")
+    @commands.command(name="translate", aliases=["tr"])
     @commands.guild_only()
-    async def translate(self, ctx: commands.Context, lang: str = None, *, text: str = None):
+    async def translate(self, ctx: commands.Context, *, args: str = None):
+        """Translate a message. Defaults to English.
+        `!translate` (reply) -> English · `!translate french` (reply) -> French
+        `!translate somali hello` -> 'hello' to Somali · `!translate explain` (reply)"""
         try:
             manager.check_cooldown("translate", ctx.author.id, 5)
         except CooldownError as e:
             await ctx.reply(embed=_compact("Slow down", f"Try again in {e.retry_after:.0f}s.", WARN),
                             allowed_mentions=NONE)
             return
+
+        tokens = (args or "").split()
+        lang = "en"          # default target language
+        text = None
+        explain = False
+
+        # is the first token a language (or 'explain')? then it sets the mode.
+        if tokens:
+            first = tokens[0].lower()
+            if first == "explain":
+                explain = True
+                text = " ".join(tokens[1:]).strip() or None
+            elif P.norm_lang(first):
+                lang = first
+                text = " ".join(tokens[1:]).strip() or None
+            else:
+                # no language given -> the whole thing is the text, target English
+                text = args.strip()
+
+        # if no inline text, use the replied-to message
         if not text and ctx.message.reference:
             try:
                 t = await ctx.channel.fetch_message(ctx.message.reference.message_id)
                 text = t.content
             except Exception:
                 text = None
-        if not lang:
-            await ctx.reply(embed=_compact("Translate",
-                "Try `!translate en` (reply to a message) or `!translate somali hello`.", WARN),
-                allowed_mentions=NONE)
-            return
-        manager.arm_cooldown("translate", ctx.author.id, 5)
+
         # strip pings from the source
         import re as _re
         text = _re.sub(r"<@[!&]?\d+>|@everyone|@here", "", text or "").strip()
         if not text:
-            await ctx.reply(embed=_compact("Translate", "Nothing to translate.", WARN), allowed_mentions=NONE)
+            await ctx.reply(embed=_compact("Translate",
+                "Try `!translate en` (reply to a message) or `!translate somali hello`.", WARN),
+                allowed_mentions=NONE)
             return
+
+        manager.arm_cooldown("translate", ctx.author.id, 5)
+
         # explain mode -> needs the LLM
-        if lang.lower() == "explain":
+        if explain:
             if not P.llm_key():
                 await ctx.reply(embed=_compact("Translate",
                     "Explain mode needs an AI provider (`UTIL_LLM_API_KEY`)."), allowed_mentions=NONE)
@@ -431,11 +479,7 @@ class UtilitiesCog(commands.Cog):
             await ctx.reply(embed=_compact("Explain", out or "I couldn't explain that right now."),
                             allowed_mentions=NONE)
             return
-        if not P.norm_lang(lang):
-            await ctx.reply(embed=_compact("Translate",
-                f"I don't know the language `{lang[:20]}`. Try en, somali, arabic, spanish, french…", WARN),
-                allowed_mentions=NONE)
-            return
+
         try:
             res = await P.translate(text, lang)
         except Exception:
@@ -460,13 +504,20 @@ class UtilitiesCog(commands.Cog):
                             allowed_mentions=NONE)
             return
         if not text:
-            await ctx.reply(embed=_compact("Caption", "Reply to an image with `!caption your text`.", WARN),
-                            allowed_mentions=NONE)
+            await ctx.reply(embed=_compact("Caption",
+                "Add caption text: reply **directly to an image or GIF** and run `!caption your text`.", WARN),
+                allowed_mentions=NONE)
+            return
+        if not ctx.message.reference:
+            await ctx.reply(embed=_compact("Caption",
+                "You must **reply directly to an image or GIF** to caption it.", WARN),
+                allowed_mentions=NONE)
             return
         img = await self._fetch_replied_image(ctx)
         if img is None:
-            await ctx.reply(embed=_compact("Caption", "Reply to an image or GIF to caption it.", WARN),
-                            allowed_mentions=NONE)
+            await ctx.reply(embed=_compact("Caption",
+                "I couldn't find an image or GIF on that message. Reply directly to one.", WARN),
+                allowed_mentions=NONE)
             return
         manager.arm_cooldown("caption", ctx.author.id, 30)
         with manager.temp_files():
@@ -474,6 +525,9 @@ class UtilitiesCog(commands.Cog):
             await ctx.reply(file=discord.File(buf, filename="caption.png"), allowed_mentions=NONE)
 
     async def _fetch_replied_image(self, ctx):
+        """Find an image/GIF on the replied message: attachments first, then
+        embeds (image/thumbnail), then any direct image URL. Returns a PIL Image
+        (first frame for GIFs) or None."""
         ref = ctx.message.reference
         if not ref:
             return None
@@ -481,21 +535,65 @@ class UtilitiesCog(commands.Cog):
             t = await ctx.channel.fetch_message(ref.message_id)
         except Exception:
             return None
+
+        candidates: list[str] = []
+        # 1) attachments that are images or gifs
         for att in t.attachments:
             ct = (att.content_type or "").lower()
-            if ct.startswith("image"):
-                try:
-                    data = await att.read()
-                    from PIL import Image
-                    return Image.open(io.BytesIO(data))
-                except Exception:
-                    return None
+            fn = (att.filename or "").lower()
+            if ct.startswith("image") or fn.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                candidates.append(att.url)
+        # 2) embeds: image / thumbnail (Discord GIF-picker GIFs arrive as embeds)
+        for emb in t.embeds:
+            for obj_attr in ("image", "thumbnail"):
+                obj = getattr(emb, obj_attr, None)
+                u = getattr(obj, "url", None) if obj else None
+                if u:
+                    candidates.append(u)
+            # some GIF embeds put the gif in video.url / .proxy_url
+            vid = getattr(emb, "video", None)
+            if vid and getattr(vid, "url", None):
+                candidates.append(vid.url)
+        # 3) any direct image URL in the message text
+        for u in resolver.extract_urls(t.content or ""):
+            if u.lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                candidates.append(u)
+
+        from PIL import Image
+        for url in candidates:
+            data = await self._download_image_bytes(url)
+            if not data:
+                continue
+            try:
+                im = Image.open(io.BytesIO(data))
+                im.seek(0)  # first frame for animated GIFs
+                return im.convert("RGBA")
+            except Exception:
+                continue
         return None
+
+    async def _download_image_bytes(self, url: str) -> bytes | None:
+        """Safely download an image URL (size-capped, SSRF-guarded)."""
+        ok, _ = safety.is_safe_url(url)
+        if not ok:
+            return None
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as s:
+                async with s.get(url, headers={"User-Agent": "IgnioBot/1.0"}) as r:
+                    if r.status != 200:
+                        return None
+                    data = await r.content.read(12 * 1024 * 1024 + 1)
+                    if len(data) > 12 * 1024 * 1024:
+                        return None
+                    return data
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ #
     # !quote
     # ------------------------------------------------------------------ #
-    @commands.command(name="quote")
+    @commands.command(name="quote", aliases=["qoute"])
     @commands.guild_only()
     async def quote(self, ctx: commands.Context):
         try:

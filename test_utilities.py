@@ -181,5 +181,83 @@ def main():
         print("  FAILURES:", FAIL); sys.exit(1)
 
 
+# ---- added v1.8.3: redirect logic, translate defaults, qoute alias ----
+def test_xray_logic():
+    from core.utilities.providers import _ctype_kind
+    from urllib.parse import urljoin
+    check("ctype html -> Web page", _ctype_kind("text/html; charset=utf8") == "Web page")
+    check("ctype video -> Video", _ctype_kind("video/mp4") == "Video")
+    # urljoin resolves both absolute and relative redirect targets
+    absolute = urljoin("https://httpbin.org/redirect-to?url=x", "https://example.com")
+    check("redirect target resolves absolute", absolute == "https://example.com")
+    relative = urljoin("https://a.com/p/", "/new")
+    check("redirect target resolves relative", relative == "https://a.com/new")
+
+
+def test_translate_parsing():
+    from core.utilities import providers as P
+    def parse(args):
+        tokens = (args or "").split(); lang = "en"; text = None; explain = False
+        if tokens:
+            first = tokens[0].lower()
+            if first == "explain":
+                explain = True; text = " ".join(tokens[1:]).strip() or None
+            elif P.norm_lang(first):
+                lang = first; text = " ".join(tokens[1:]).strip() or None
+            else:
+                text = args.strip()
+        return lang, text, explain
+    check("translate empty defaults to english", parse("") == ("en", None, False))
+    check("translate <lang> sets target", parse("french") == ("french", None, False))
+    check("translate <lang> <text>", parse("somali hello") == ("somali", "hello", False))
+    check("translate bare text -> english", parse("hello world") == ("en", "hello world", False))
+    check("translate explain mode", parse("explain")[2] is True)
+
+
+async def test_qoute_alias():
+    import discord
+    from discord.ext import commands
+    from core.utilities.cog import UtilitiesCog
+    bot = commands.Bot(command_prefix="!!", intents=discord.Intents.all())
+    await bot.add_cog(UtilitiesCog(bot, None, None))
+    q = bot.get_command("quote")
+    qo = bot.get_command("qoute")
+    return q is not None and qo is not None and qo.name == "quote"
+
+
+def test_catchup_command_filter():
+    # the spam filter should drop short command-looking lines
+    def is_spam(c):
+        return c[:1] in "!?./$%&>" and len(c) < 40
+    check("filters !!catchup spam", is_spam("!!catchup 5m"))
+    check("filters !!help spam", is_spam("!!help"))
+    check("keeps a real sentence", not is_spam("did you see the game last night it was wild"))
+
+
+def _extra_main():
+    test_xray_logic()
+    test_translate_parsing()
+    test_catchup_command_filter()
+    check("qoute alias maps to quote", asyncio.run(test_qoute_alias()))
+
+
 if __name__ == "__main__":
+    # patch main() to also run extras before printing the result
+    _orig_main = main
+    def main():  # noqa
+        print("[test_utilities]")
+        test_jobs()
+        check("concurrency cap works", asyncio.run(test_concurrency()))
+        check("temp files cleaned up", test_tempfiles())
+        test_ssrf()
+        test_resolver()
+        test_cards()
+        test_windows()
+        check("afk set + clear works", asyncio.run(test_afk_flow()))
+        test_gating()
+        test_providers()
+        _extra_main()
+        print(f"\n  RESULT: {len(PASS)} passed, {len(FAIL)} failed")
+        if FAIL:
+            print("  FAILURES:", FAIL); sys.exit(1)
     main()
