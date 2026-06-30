@@ -145,6 +145,25 @@ def test_gating():
     check("all 10 utility cmds map to utilities category", True)
 
 
+
+def test_providers():
+    from core.utilities import providers as P
+    check("lang norm: somali->so", P.norm_lang("somali") == "so")
+    check("lang norm: English->en", P.norm_lang("English") == "en")
+    check("lang norm: unknown->None", P.norm_lang("klingon") is None)
+    check("weather code 61 = Light rain", P.weather_desc(61) == "Light rain")
+    check("weather code 0 = Clear", P.weather_desc(0) == "Clear")
+    check("zoom country < zoom city", P._zoom_for_type("country") < P._zoom_for_type("city"))
+    check("llm/song keys read from env (None when unset)",
+          P.llm_key() is None and P.song_key() is None)
+    import os as _os
+    _os.environ["UTIL_LLM_API_KEY"] = "sk-proj-test"
+    check("openai-style key -> openai provider", P._llm_provider() == "openai")
+    _os.environ["UTIL_LLM_API_KEY"] = "sk-ant-test"
+    check("anthropic-style key -> anthropic provider", P._llm_provider() == "anthropic")
+    _os.environ.pop("UTIL_LLM_API_KEY", None)
+
+
 def main():
     print("[test_utilities]")
     test_jobs()
@@ -156,6 +175,7 @@ def main():
     test_windows()
     check("afk set + clear works", asyncio.run(test_afk_flow()))
     test_gating()
+    test_providers()
     print(f"\n  RESULT: {len(PASS)} passed, {len(FAIL)} failed")
     if FAIL:
         print("  FAILURES:", FAIL); sys.exit(1)

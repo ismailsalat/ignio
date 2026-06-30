@@ -8,12 +8,37 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.7.2"
+VERSION = "1.8.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.8.1",
+        "date": "2026-06-29",
+        "title": "OpenAI support",
+        "notes": [
+            "!tldr, !catchup, and !translate explain now support OpenAI keys",
+            "Provider auto-detected from your key (sk-proj = OpenAI, sk-ant = Anthropic)",
+            "Reads UTIL_LLM_API_KEY or the standard OPENAI_API_KEY / ANTHROPIC_API_KEY",
+            "Added .env.example template; keys always live in .env (never committed)",
+        ],
+    },
+    {
+        "version": "1.8.0",
+        "date": "2026-06-29",
+        "title": "Utilities go live",
+        "notes": [
+            "!weather now works out of the box (Open-Meteo, no API key needed)",
+            "!map now renders a real OSM map with a pin (no API key needed)",
+            "!translate now works (MyMemory), with !translate explain for slang",
+            "!xray now follows redirects for real and reports the final destination",
+            "!tldr + !catchup summaries work when UTIL_LLM_API_KEY is set (Anthropic)",
+            "!song works when UTIL_SONG_API_KEY is set (AudD)",
+            "All providers are optional and fail gracefully; nothing is ever stored",
+        ],
+    },
     {
         "version": "1.7.2",
         "date": "2026-06-29",

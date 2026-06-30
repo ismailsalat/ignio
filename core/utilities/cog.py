@@ -22,6 +22,7 @@ from discord.ext import commands
 
 from core.utilities.jobs import manager, CooldownError, BusyError
 from core.utilities import resolver, safety, cards
+from core.utilities import providers as P
 
 NONE = discord.AllowedMentions.none()
 ACCENT = 0x6FB7B0
@@ -29,11 +30,6 @@ WARN = 0xE0A042
 
 # ---- time-window parsing for catchup ----
 _WINDOWS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120, "4h": 240}
-
-
-def _provider(name: str) -> str | None:
-    """Return an env-configured provider key, or None if not set."""
-    return os.environ.get(name) or None
 
 
 def _compact(title: str, body: str, color=ACCENT) -> discord.Embed:
@@ -140,20 +136,23 @@ class UtilitiesCog(commands.Cog):
 
     async def _summarize_chat(self, msgs, window, reply=False):
         """Summarize via LLM provider if configured; else a clean fallback."""
-        if not _provider("UTIL_LLM_API_KEY"):
-            joined = " ".join(msgs)
-            words = len(joined.split())
-            return (f"• {len(msgs)} messages, ~{words} words.\n"
-                    f"• Summaries need an AI provider that isn't set up yet.\n"
-                    f"• Ask an admin to configure `UTIL_LLM_API_KEY` to enable smart summaries.")
-        # provider path is intentionally thin — wired to whatever LLM is configured
-        try:
-            return await self._llm_summarize(msgs, window, reply)
-        except Exception:
-            return "• I couldn't summarize that right now."
-
-    async def _llm_summarize(self, msgs, window, reply):  # pragma: no cover (needs provider)
-        raise NotImplementedError
+        if not P.llm_key():
+            return ("• Smart summaries need an AI provider that isn't set up yet.\n"
+                    "• Ask an admin to set `UTIL_LLM_API_KEY` to enable this.\n"
+                    f"• (I read {len(msgs)} recent messages but won't store them.)")
+        joined = "\n".join(m[:300] for m in msgs)[:6000]
+        if reply:
+            system = ("You explain what was happening in a Discord chat around a message. "
+                      "Output 3-4 short bullets: how it started, the main topic, the "
+                      "confusion/debate, what it became. Neutral, no usernames, no slurs.")
+            prompt = f"Messages around the target (oldest first):\n{joined}"
+        else:
+            system = ("You catch someone up on a Discord channel. Output 5-6 short bullets: "
+                      "main topic, what changed, any important link/event, the current "
+                      "joke/debate, any unanswered question. Neutral, concise, no usernames.")
+            prompt = f"Recent messages (last {window}, oldest first):\n{joined}"
+        out = await P.llm_complete(system, prompt, max_tokens=380)
+        return out or "• I couldn't summarize that right now."
 
     # ------------------------------------------------------------------ #
     # !tldr
@@ -174,11 +173,17 @@ class UtilitiesCog(commands.Cog):
                 "Reply to a message/link/video, or give me some text to shorten.", WARN),
                 allowed_mentions=NONE)
             return
-        if not _provider("UTIL_LLM_API_KEY"):
+        if not P.llm_key():
             await ctx.reply(embed=_compact("TL;DR",
-                "Smart summaries need an AI provider that isn't configured yet."), allowed_mentions=NONE)
+                "Smart summaries need an AI provider (`UTIL_LLM_API_KEY`) that isn't configured yet."),
+                allowed_mentions=NONE)
             return
-        await ctx.reply(embed=_compact("TL;DR", "• (summary provider configured)"), allowed_mentions=NONE)
+        working = await ctx.reply(embed=_compact("TL;DR", "Reading…"), allowed_mentions=NONE)
+        out = await P.llm_complete(
+            "Summarize the user's content into at most 5 short bullets: main point, "
+            "key claim, why it matters. Be concise and neutral. No preamble.",
+            src[:6000], max_tokens=300)
+        await working.edit(embed=_compact("TL;DR", out or "I couldn't summarize that right now."))
 
     async def _gather_source_text(self, ctx, text):
         if text:
@@ -205,12 +210,39 @@ class UtilitiesCog(commands.Cog):
                             allowed_mentions=NONE)
             return
         manager.arm_cooldown("song", ctx.author.id, 90)
-        if not _provider("UTIL_SONG_API_KEY"):
+        if not P.song_key():
             await ctx.reply(embed=_compact("Song ID",
-                "Song matching needs a provider that isn't configured yet."), allowed_mentions=NONE)
+                "Song matching needs a provider (`UTIL_SONG_API_KEY`) that isn't configured yet."),
+                allowed_mentions=NONE)
             return
-        await ctx.reply(embed=_compact("Song", "I could not access usable audio from this post."),
-                        allowed_mentions=NONE)
+        # find a media URL from the arg or the replied message
+        target = url
+        if not target and ctx.message.reference:
+            try:
+                t = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                target = resolver.first_video_target(t)
+            except Exception:
+                target = None
+        if not target:
+            await ctx.reply(embed=_compact("Song", "I could not access usable audio from this post."),
+                            allowed_mentions=NONE)
+            return
+        working = await ctx.reply(embed=_compact("Song", "Listening…"), allowed_mentions=NONE)
+        try:
+            async with manager.slot("song", ctx.guild.id, 1):
+                res = await P.song_recognize(target)
+        except BusyError:
+            await working.edit(embed=_compact("Song", "Busy with another track — try again shortly.", WARN))
+            return
+        except Exception:
+            res = None
+        if not res or not res.get("title"):
+            await working.edit(embed=_compact("Song", "I could not access usable audio from this post."))
+            return
+        body = f"**{res['title']}** — {res.get('artist','?')}"
+        if res.get("url"):
+            body += f"\n[Open source]({res['url']})"
+        await working.edit(embed=_compact("Song found", body))
 
     # ------------------------------------------------------------------ #
     # !xray
@@ -242,12 +274,32 @@ class UtilitiesCog(commands.Cog):
                 f"• That link is blocked: {reason}\n• I won't open private or unsafe addresses."),
                 allowed_mentions=NONE)
             return
+        working = await ctx.reply(embed=_compact("Link X-ray", "Inspecting the link…"),
+                                  allowed_mentions=NONE)
+        try:
+            async with manager.slot("xray", ctx.guild.id, 2):
+                res = await P.xray(url)
+        except BusyError:
+            await working.edit(embed=_compact("Link X-ray", "Busy scanning other links — try again shortly.", WARN))
+            return
+        except Exception:
+            res = None
         from urllib.parse import urlparse
-        host = urlparse(url).hostname or "unknown"
-        body = (f"• Opens to: `{host}`\n"
-                f"• Final destination: needs a fetch provider to follow redirects\n"
-                f"• Risk signals: none obvious (this isn't a safety guarantee)")
-        await ctx.reply(embed=_compact("Link X-ray", body), allowed_mentions=NONE)
+        if not res:
+            await working.edit(embed=_compact("Link X-ray", "I couldn't inspect that link.", WARN))
+            return
+        if res.get("blocked"):
+            await working.edit(embed=_compact("Link X-ray",
+                f"• Blocked: {res['blocked']}\n• I won't follow that link."))
+            return
+        opens = urlparse(url).hostname or "unknown"
+        dest = urlparse(res["final"]).hostname or opens
+        body = (f"• Opens to: `{opens}`\n"
+                f"• Final destination: `{dest}`\n"
+                f"• Redirects: {res['hops']}\n"
+                f"• Content: {res['kind']}\n"
+                f"• Risk signals: none obvious — *“no known warning” is not a safety guarantee.*")
+        await working.edit(embed=_compact("Link X-ray", body))
 
     # ------------------------------------------------------------------ #
     # !map
@@ -266,13 +318,41 @@ class UtilitiesCog(commands.Cog):
                             allowed_mentions=NONE)
             return
         manager.arm_cooldown("map", ctx.author.id, 15)
-        if not _provider("UTIL_MAP_API_KEY"):
-            await ctx.reply(embed=_compact("Map",
-                f"Maps for **{place[:60]}** need a map provider that isn't configured yet."),
-                allowed_mentions=NONE)
+        working = await ctx.reply(embed=_compact("Map", "Finding that place…"), allowed_mentions=NONE)
+        try:
+            spots = await P.geocode_osm(place)
+        except Exception:
+            spots = []
+        if not spots:
+            await working.edit(embed=_compact("Map",
+                f"I couldn't find **{place[:60]}**. Try a more specific name.", WARN))
             return
-        await ctx.reply(embed=_compact("Map", f"(map provider configured for {place[:60]})"),
-                        allowed_mentions=NONE)
+        # ambiguous: show up to 3 choices
+        if len(spots) > 1 and spots[0].get("importance", 0) < 0.55:
+            opts = "\n".join(f"• {s['display_name'][:80]}" for s in spots[:3])
+            await working.edit(embed=_compact("Did you mean…",
+                f"{opts}\n\nTry a more specific name like `{place}, country`."))
+            return
+        spot = spots[0]
+        zoom = P._zoom_for_type(spot.get("type", "place"), spot.get("bbox"))
+        try:
+            png = await P.static_map_png(spot["lat"], spot["lon"], zoom)
+        except Exception:
+            png = None
+        link = f"https://www.openstreetmap.org/?mlat={spot['lat']}&mlon={spot['lon']}#map={zoom}/{spot['lat']}/{spot['lon']}"
+        name = spot["display_name"].split(",")[0]
+        if png:
+            import io as _io
+            try:
+                await working.delete()
+            except Exception:
+                pass
+            await ctx.send(
+                embed=_compact("", f"📍 **{name}**\n[Open in Maps]({link})"),
+                file=discord.File(_io.BytesIO(png), filename="map.png"),
+                allowed_mentions=NONE)
+        else:
+            await working.edit(embed=_compact("Map", f"📍 **{name}**\n[Open in Maps]({link})"))
 
     # ------------------------------------------------------------------ #
     # !weather
@@ -291,13 +371,23 @@ class UtilitiesCog(commands.Cog):
                             allowed_mentions=NONE)
             return
         manager.arm_cooldown("weather", ctx.author.id, 15)
-        if not _provider("UTIL_WEATHER_API_KEY"):
-            await ctx.reply(embed=_compact("Weather",
-                f"Weather for **{place[:60]}** needs a weather provider that isn't configured yet."),
-                allowed_mentions=NONE)
+        working = await ctx.reply(embed=_compact("Weather", "Checking the sky…"), allowed_mentions=NONE)
+        try:
+            data = await P.weather(place)
+        except Exception:
+            data = None
+        if not data:
+            await working.edit(embed=_compact("Weather",
+                f"I couldn't find weather for **{place[:60]}**. Try a city name.", WARN))
             return
-        await ctx.reply(embed=_compact("Weather", f"(weather provider configured for {place[:60]})"),
-                        allowed_mentions=NONE)
+        deg = data["deg"]
+        def _t(v): return f"{round(v)}{deg}" if v is not None else "—"
+        body = (f"**{data['label']}**\n\n"
+                f"Now: {_t(data['now'])} · {P.weather_desc(data['code'])}\n"
+                f"Feels like: {_t(data['feels'])}\n"
+                f"Today: {_t(data['today_max'])} / {_t(data['today_min'])}\n"
+                f"Tomorrow: {_t(data['tom_max'])} / {_t(data['tom_min'])}")
+        await working.edit(embed=_compact("", body))
 
     # ------------------------------------------------------------------ #
     # !translate
@@ -323,11 +413,38 @@ class UtilitiesCog(commands.Cog):
                 allowed_mentions=NONE)
             return
         manager.arm_cooldown("translate", ctx.author.id, 5)
-        if not _provider("UTIL_LLM_API_KEY"):
-            await ctx.reply(embed=_compact("Translate",
-                "Translation needs an AI provider that isn't configured yet."), allowed_mentions=NONE)
+        # strip pings from the source
+        import re as _re
+        text = _re.sub(r"<@[!&]?\d+>|@everyone|@here", "", text or "").strip()
+        if not text:
+            await ctx.reply(embed=_compact("Translate", "Nothing to translate.", WARN), allowed_mentions=NONE)
             return
-        await ctx.reply(embed=_compact("Translate", "(translation provider configured)"),
+        # explain mode -> needs the LLM
+        if lang.lower() == "explain":
+            if not P.llm_key():
+                await ctx.reply(embed=_compact("Translate",
+                    "Explain mode needs an AI provider (`UTIL_LLM_API_KEY`)."), allowed_mentions=NONE)
+                return
+            out = await P.llm_complete(
+                "You explain slang, tone, and meaning of messages in plain English. Be brief (2-3 lines).",
+                text[:1500], max_tokens=220)
+            await ctx.reply(embed=_compact("Explain", out or "I couldn't explain that right now."),
+                            allowed_mentions=NONE)
+            return
+        if not P.norm_lang(lang):
+            await ctx.reply(embed=_compact("Translate",
+                f"I don't know the language `{lang[:20]}`. Try en, somali, arabic, spanish, french…", WARN),
+                allowed_mentions=NONE)
+            return
+        try:
+            res = await P.translate(text, lang)
+        except Exception:
+            res = None
+        if not res or not res.get("translated"):
+            await ctx.reply(embed=_compact("Translate", "I couldn't translate that right now.", WARN),
+                            allowed_mentions=NONE)
+            return
+        await ctx.reply(embed=_compact(f"→ {lang.title()}", res["translated"][:1500]),
                         allowed_mentions=NONE)
 
     # ------------------------------------------------------------------ #
