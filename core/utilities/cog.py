@@ -227,15 +227,33 @@ class UtilitiesCog(commands.Cog):
 
     async def _gather_source_text(self, ctx, text):
         if text:
-            return text[:8000]
+            # if the user passed a bare URL, try to enrich it below instead
+            if not text.lower().startswith("http"):
+                return text[:8000]
         ref = ctx.message.reference
+        target = None
         if ref:
             try:
-                t = await ctx.channel.fetch_message(ref.message_id)
-                return (t.content or "")[:8000]
+                target = await ctx.channel.fetch_message(ref.message_id)
             except Exception:
-                return None
-        return None
+                target = None
+        # if a URL was passed inline, also use the current message's embeds
+        if target is None:
+            target = ctx.message
+
+        parts = []
+        content = (getattr(target, "content", "") or "").strip()
+        if content and not content.lower().startswith(ctx.prefix):
+            parts.append(content)
+        # pull embed title + author + description (the post's caption)
+        for emb in getattr(target, "embeds", []):
+            for v in (getattr(emb, "title", None),
+                      getattr(getattr(emb, "author", None), "name", None),
+                      getattr(emb, "description", None)):
+                if v:
+                    parts.append(str(v))
+        joined = "\n".join(parts).strip()
+        return joined[:8000] if joined else None
 
     # ------------------------------------------------------------------ #
     # !song
@@ -578,73 +596,96 @@ class UtilitiesCog(commands.Cog):
         and direct image URLs. Returns (None, False) if nothing usable."""
         ref = ctx.message.reference
         if not ref:
-            return None, False
-        try:
-            t = await ctx.channel.fetch_message(ref.message_id)
-        except Exception as ex:
-            print(f"[Ignio][Caption] couldn't fetch replied message: {type(ex).__name__}")
+            print("[Ignio][Caption] no reply reference on the command message")
             return None, False
 
+        # get the replied-to message: prefer the cached resolved object, else fetch
+        t = None
+        if getattr(ref, "resolved", None) is not None and not isinstance(ref.resolved, discord.DeletedReferencedMessage):
+            t = ref.resolved
+        if t is None:
+            try:
+                t = await ctx.channel.fetch_message(ref.message_id)
+            except Exception as ex:
+                print(f"[Ignio][Caption] couldn't fetch replied message: {type(ex).__name__}: {ex}")
+                return None, False
+
+        n_att = len(getattr(t, "attachments", []))
+        n_emb = len(getattr(t, "embeds", []))
+        print(f"[Ignio][Caption] replied msg has {n_att} attachment(s), {n_emb} embed(s)")
+
+        result = await self._image_from_message(t)
+        if result[0] is not None:
+            return result
+
+        # last resort: the user may have replied to a wrapper; scan a couple of
+        # nearby recent messages for an image/GIF from the same author
+        try:
+            async for m in ctx.channel.history(limit=6, before=ctx.message):
+                if m.id == t.id:
+                    continue
+                r = await self._image_from_message(m)
+                if r[0] is not None:
+                    print("[Ignio][Caption] found image on a nearby message")
+                    return r
+        except Exception:
+            pass
+        print("[Ignio][Caption] no usable image/GIF found")
+        return None, False
+
+    async def _image_from_message(self, t):
+        """Extract a PIL image (+animated flag) from one message, or (None, False)."""
         from PIL import Image
 
         # 1) attachments — read bytes directly via discord (most reliable)
-        for att in t.attachments:
-            ct = (att.content_type or "").lower()
-            fn = (att.filename or "").lower()
+        for att in getattr(t, "attachments", []):
+            ct = (getattr(att, "content_type", None) or "").lower()
+            fn = (getattr(att, "filename", "") or "").lower()
             if ct.startswith("image") or fn.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
                 try:
                     data = await att.read()
                     im = Image.open(io.BytesIO(data))
-                    animated = getattr(im, "is_animated", False)
-                    return im, animated
+                    return im, getattr(im, "is_animated", False)
                 except Exception as ex:
-                    print(f"[Ignio][Caption] attachment read failed: {type(ex).__name__}")
+                    print(f"[Ignio][Caption] attachment read failed: {type(ex).__name__}: {ex}")
                     continue
 
-        # 2) collect candidate URLs from text + embeds, resolving Tenor pages
+        # 2) candidate URLs from text + embeds (Tenor resolved to direct GIF)
         candidates: list[str] = []
-
-        # any tenor.com/view link in the message text
-        for u in resolver.extract_urls(t.content or ""):
+        for u in resolver.extract_urls(getattr(t, "content", "") or ""):
             if P.is_tenor_url(u):
                 tn = await P.resolve_tenor(u)
-                if tn and tn.get("gif"):
-                    candidates.append(tn["gif"])
+                if tn and (tn.get("gif") or tn.get("mp4")):
+                    candidates.append(tn.get("gif") or tn.get("mp4"))
             else:
                 base = u.lower().split("?")[0]
                 if base.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
                     candidates.append(u)
 
-        # embeds: Tenor/GIF-picker embeds + image/thumbnail/video fields
-        for emb in t.embeds:
+        for emb in getattr(t, "embeds", []):
             emb_url = getattr(emb, "url", None)
             if emb_url and P.is_tenor_url(emb_url):
                 tn = await P.resolve_tenor(emb_url)
-                if tn and tn.get("gif"):
-                    candidates.append(tn["gif"])
-            # gifv/video embeds: the image/thumbnail is usually the .gif still or anim
+                if tn and (tn.get("gif") or tn.get("mp4")):
+                    candidates.append(tn.get("gif") or tn.get("mp4"))
             for obj_attr in ("image", "thumbnail", "video"):
                 obj = getattr(emb, obj_attr, None)
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
 
-        # 3) try each candidate; only keep what PIL can actually open as an image
         for url in candidates:
             data = await self._download_image_bytes(url)
             if not data:
                 continue
             try:
                 im = Image.open(io.BytesIO(data))
-                im.load()  # force-decode so we know it's valid
-                animated = getattr(im, "is_animated", False)
-                im2 = Image.open(io.BytesIO(data))  # fresh handle (load consumed frames)
-                return im2, animated
-            except Exception:
+                im.load()
+                im2 = Image.open(io.BytesIO(data))
+                return im2, getattr(im, "is_animated", False)
+            except Exception as ex:
+                print(f"[Ignio][Caption] candidate decode failed: {type(ex).__name__}")
                 continue
-
-        if not candidates and not t.attachments:
-            print("[Ignio][Caption] replied message had no image/GIF attachment, Tenor link, or embed")
         return None, False
 
     async def _download_image_bytes(self, url: str) -> bytes | None:
@@ -657,12 +698,14 @@ class UtilitiesCog(commands.Cog):
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as s:
                 async with s.get(url, headers={"User-Agent": "IgnioBot/1.0"}) as r:
                     if r.status != 200:
+                        print(f"[Ignio][Caption] image URL returned {r.status}")
                         return None
                     data = await r.content.read(12 * 1024 * 1024 + 1)
                     if len(data) > 12 * 1024 * 1024:
                         return None
                     return data
-        except Exception:
+        except Exception as ex:
+            print(f"[Ignio][Caption] image download failed: {type(ex).__name__}")
             return None
 
     # ------------------------------------------------------------------ #
@@ -702,7 +745,8 @@ class UtilitiesCog(commands.Cog):
             avatar = None
         ts = t.created_at.strftime("%b %d, %Y")
         with manager.temp_files():
-            buf = cards.quote_card(t.author.display_name, t.content, ts, avatar)
+            handle = getattr(t.author, "name", None)
+            buf = cards.quote_card(t.author.display_name, t.content, ts, avatar, handle=handle)
             await ctx.reply(file=discord.File(buf, filename="quote.png"), allowed_mentions=NONE)
 
     # ------------------------------------------------------------------ #

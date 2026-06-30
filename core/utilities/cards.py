@@ -34,27 +34,37 @@ def _wrap_to_width(draw, text, font, max_w):
 
 
 def quote_card(display_name: str, text: str, timestamp: str,
-               avatar: Image.Image | None = None) -> io.BytesIO:
-    """One clean quote image: avatar, name, message, timestamp, tiny branding."""
+               avatar: Image.Image | None = None, handle: str | None = None) -> io.BytesIO:
+    """A clean Twitter-style quote card: avatar, name + verified, @handle, the
+    message, timestamp, and realistic-looking engagement numbers."""
+    import secrets
+
     W = 720
     name = clean_name(display_name) or "someone"
+    at = "@" + (handle or name.lower().replace(" ", "")[:15] or "user")
     body = (text or "").strip()
     if len(body) > 280:
         body = body[:277].rstrip() + "…"
 
-    scratch = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
-    body_font = f_reg(26)
-    lines = _wrap_to_width(scratch, body, body_font, W - 150)
-    lines = lines[:6]
-    line_h = 36
-    H = max(180, 120 + len(lines) * line_h + 40)
+    # tweet-like colors (dark mode twitter/X)
+    TW_BG = (21, 24, 28)
+    TW_INK = (231, 233, 234)
+    TW_DIM = (113, 118, 123)
+    TW_BLUE = (29, 155, 240)
 
-    img = Image.new("RGBA", (W, H), BG + (255,))
+    scratch = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+    body_font = f_reg(30)
+    lines = _wrap_to_width(scratch, body, body_font, W - 80)[:8]
+    line_h = 42
+    top = 110
+    body_h = len(lines) * line_h
+    H = top + body_h + 120
+
+    img = Image.new("RGBA", (W, H), TW_BG + (255,))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([12, 12, W - 12, H - 12], radius=22, fill=CARD)
 
     # avatar
-    ax, ay, asz = 36, 36, 64
+    ax, ay, asz = 28, 28, 56
     if avatar is not None:
         av = avatar.convert("RGBA").resize((asz, asz))
         mask = Image.new("L", (asz, asz), 0)
@@ -63,20 +73,57 @@ def quote_card(display_name: str, text: str, timestamp: str,
     else:
         d.ellipse([ax, ay, ax + asz, ay + asz], fill=(70, 66, 84))
         init = (name[:1] or "?").upper()
-        d.text((ax + asz // 2 - _text_w(d, init, f_title(30)) // 2, ay + 14),
-               init, font=f_title(30), fill=INK)
+        d.text((ax + asz // 2 - _text_w(d, init, f_title(26)) // 2, ay + 12),
+               init, font=f_title(26), fill=TW_INK)
 
-    d.text((ax + asz + 18, ay + 6), name, font=f_title(26), fill=INK)
-    d.text((ax + asz + 18, ay + 38), timestamp, font=f_reg(16), fill=DIM)
+    # name + verified check + handle
+    nx = ax + asz + 16
+    d.text((nx, ay + 4), name, font=f_title(24), fill=TW_INK)
+    nw = _text_w(d, name, f_title(24))
+    # verified badge (drawn check so it always renders)
+    bx, by = nx + nw + 8, ay + 9
+    d.ellipse([bx, by, bx + 20, by + 20], fill=TW_BLUE)
+    d.line([(bx + 5, by + 10), (bx + 9, by + 14), (bx + 15, by + 6)],
+           fill=(255, 255, 255), width=2, joint="curve")
+    d.text((nx, ay + 32), at, font=f_reg(18), fill=TW_DIM)
 
-    y = ay + asz + 24
+    # body
+    y = top
     for ln in lines:
-        d.text((36, y), ln, font=body_font, fill=INK)
+        d.text((28, y), ln, font=body_font, fill=TW_INK)
         y += line_h
 
-    d.text((W - 90, H - 34), "ignio", font=f_label(14), fill=(90, 86, 104))
+    # timestamp line
+    y += 8
+    d.text((28, y), timestamp, font=f_reg(17), fill=TW_DIM)
+    y += 34
 
-    img.putalpha(_round_mask((W, H), 24))
+    # divider
+    d.line([(28, y), (W - 28, y)], fill=(47, 51, 54), width=1)
+    y += 18
+
+    # realistic engagement numbers
+    def _fmt(n):
+        if n >= 1000:
+            return f"{n/1000:.1f}K".replace(".0K", "K")
+        return str(n)
+    replies = secrets.randbelow(900) + 12
+    retweets = secrets.randbelow(4000) + 50
+    likes = retweets * (3 + secrets.randbelow(4)) + secrets.randbelow(500)
+    views = likes * (8 + secrets.randbelow(20)) + secrets.randbelow(9000)
+
+    stats = [(_fmt(retweets), "Reposts"), (_fmt(likes), "Likes"), (_fmt(views), "Views")]
+    sx = 28
+    for val, lbl in stats:
+        d.text((sx, y), val, font=f_title(20), fill=TW_INK)
+        vw = _text_w(d, val, f_title(20))
+        d.text((sx, y + 26), lbl, font=f_reg(14), fill=TW_DIM)
+        lw = _text_w(d, lbl, f_reg(14))
+        sx += max(vw, lw) + 48
+
+    d.text((W - 70, H - 26), "ignio", font=f_label(13), fill=(70, 74, 78))
+
+    img.putalpha(_round_mask((W, H), 22))
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG")
     buf.seek(0)

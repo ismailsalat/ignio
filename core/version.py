@@ -8,12 +8,27 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.2",
+        "date": "2026-06-30",
+        "title": "Caption + map + quote polish",
+        "notes": [
+            "!caption: more robust image/GIF finder (resolved reply, attachment bytes,",
+            "  Tenor resolve, nearby-message fallback) with full debug logging",
+            "!quote: now a clean Twitter/X-style card with verified badge, @handle,",
+            "  and realistic engagement (reposts/likes/views)",
+            "!map: fixed white left border at low zoom (tiles wrap the globe; ocean bg)",
+            "Video download: faster + more formats (concurrent fragments, browser UA,",
+            "  more fallbacks) — still public-only, no proxies/bypasses/cookies",
+            "!tldr: now uses the post caption/title from embeds when there's no transcript",
+        ],
+    },
     {
         "version": "1.9.1",
         "date": "2026-06-30",

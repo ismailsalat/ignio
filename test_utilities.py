@@ -289,6 +289,18 @@ def test_afk_text():
     check("ago: minutes", _ago(120) == "2 minutes ago")
 
 
+
+
+def test_quote_twitter():
+    from core.utilities.cards import quote_card
+    # renders with a handle + engagement, returns a valid PNG
+    buf = quote_card("Milk", "hey", "Jun 30, 2026", handle="milk")
+    check("twitter-style quote renders PNG", buf.read()[:8].startswith(b"\x89PNG"))
+    # long text still renders
+    buf2 = quote_card("Someone", "x " * 200, "Jun 30, 2026")
+    check("quote handles long text", buf2.read()[:8].startswith(b"\x89PNG"))
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -299,6 +311,7 @@ def _extra_main():
     test_animated_caption()
     test_media_blocked()
     test_afk_text()
+    test_quote_twitter()
 
 
 if __name__ == "__main__":

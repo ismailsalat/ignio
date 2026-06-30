@@ -112,9 +112,9 @@ def _blocking_download(url: str, max_mb: int) -> DownloadResult:
 
     os.makedirs(TEMP_DIR, exist_ok=True)
     out_tmpl = os.path.join(TEMP_DIR, "%(id)s.%(ext)s")
-    # prefer a single progressive mp4 <=720p; fall back to best mp4/webm
-    fmt = ("best[ext=mp4][height<=720]/best[ext=webm][height<=720]/"
-           "best[height<=720]/best")
+    # prefer a single progressive mp4 <=720p; fall back through to anything playable
+    fmt = ("best[ext=mp4][height<=720]/best[ext=mp4]/"
+           "best[ext=webm][height<=720]/best[height<=720]/best")
     has_ffmpeg = ffmpeg_available()
     ydl_opts = {
         "format": fmt,
@@ -125,12 +125,17 @@ def _blocking_download(url: str, max_mb: int) -> DownloadResult:
         "logtostderr": False,
         "verbose": False,
         "max_filesize": max_mb * 1024 * 1024,
-        "socket_timeout": 20,
-        "retries": 1,
+        "socket_timeout": 15,
+        "retries": 2,
+        "fragment_retries": 2,
+        "concurrent_fragment_downloads": 4,   # faster multi-fragment pulls
         "nocheckcertificate": False,
-        # never use cookies / credentials
-        "cookiefile": None,
+        "cookiefile": None,                   # never use cookies / credentials
         "age_limit": 0,
+        # a normal browser UA improves success on some public CDNs (not a bypass)
+        "http_headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                       "Chrome/120.0 Safari/537.36"},
     }
     if not has_ffmpeg:
         # don't attempt merges that need ffmpeg

@@ -184,14 +184,18 @@ async def static_map_png(lat: float, lon: float, zoom: int) -> bytes | None:
     fx, fy = xt - cx, yt - cy  # fractional position inside the center tile
 
     # 5x4 tile grid; center tile (cx,cy) is pasted at (512,256) so there's
-    # always slack to center the crop on the point without clamping
-    canvas = Image.new("RGB", (1280, 1024), (233, 229, 220))
+    # always slack to center the crop on the point without clamping.
+    # background = ocean color so any uncovered area blends in (not white).
+    OCEAN = (170, 211, 223)
+    canvas = Image.new("RGB", (1280, 1024), OCEAN)
     base_x, base_y = 2, 2  # center tile offset in the grid
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
         for dx in (-2, -1, 0, 1, 2):
             for dy in (-2, -1, 0, 1):
                 tx, ty = cx + dx, cy + dy
-                if not (0 <= tx < n and 0 <= ty < n):
+                # longitude wraps around the globe, so wrap tx instead of skipping
+                tx = tx % n
+                if not (0 <= ty < n):
                     continue
                 url = f"https://tile.openstreetmap.org/{zoom}/{tx}/{ty}.png"
                 try:
