@@ -13,7 +13,7 @@ REAL = {
     "shop","daily","buy","me","use",
     "rate","value","worth","economy","rate set","tax","treasury","treasury give",
     "multiplier","rebalance",
-    "roulette","roulettestats","steal","steal stats",
+    "roulette","roulettestats","steal","steal stats","sobship",
     "admin profile","admin givesob","admin givetoken","admin reset","admin recount",
     "admin threshold","admin emoji","admin whoami","admin config","admin stats","admin servers",
     "admin altblock","admin tips","admin freeze","admin audit","admin audit tx","admin suspicious",

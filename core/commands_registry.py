@@ -78,7 +78,7 @@ COMMANDS = [
     # ---- Admin: economy controls (disable / limit) ----
     {"name": "admin freeze", "cat": "admin", "desc": "Emergency: pause ALL earning/economy server-wide", "usage": "admin freeze on|off", "admin": True},
     {"name": "admin shop", "cat": "admin", "desc": "Open/close the WHOLE shop", "usage": "admin shop on|off", "admin": True},
-    {"name": "admin item", "cat": "admin", "desc": "Disable/enable a single shop item", "usage": "admin item disable|enable <key>", "admin": True},
+    {"name": "admin item", "cat": "admin", "desc": "Disable/enable a shop item, or give/take items from a user", "usage": "admin item disable|enable|give|take ...", "admin": True},
     {"name": "admin category", "cat": "admin", "desc": "Disable/enable a whole shop category", "usage": "admin category disable|enable <name>", "admin": True},
     {"name": "admin auditcap", "cat": "admin", "desc": "Max audits one person can do per day", "usage": "admin auditcap <n>", "admin": True},
     {"name": "admin auditcd", "cat": "admin", "desc": "Cooldown between a person's audits (seconds)", "usage": "admin auditcd <seconds>", "admin": True},
@@ -113,8 +113,9 @@ COMMANDS = [
     # ---- Games ----
     {"name": "roulette", "cat": "games", "desc": "Russian Roulette — wager sobs 50/50", "usage": "roulette @user <amount>"},
     {"name": "roulettestats", "cat": "games", "desc": "See roulette match history & odds", "usage": "rrstats"},
-    {"name": "steal", "cat": "games", "desc": "Risky gamble to steal sobs (18% odds, capped)", "usage": "steal @user [lockpick]"},
+    {"name": "steal", "cat": "games", "desc": "Risky gamble to steal sobs (~45% odds, small + capped)", "usage": "steal @user [lockpick]"},
     {"name": "steal stats", "cat": "games", "desc": "Your steal record (profit, attempts, immunity)", "usage": "steal stats"},
+    {"name": "sobship", "cat": "games", "desc": "Fun love-meter between two people (no sobs involved)", "usage": "sobship @user [@user2]"},
 
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},

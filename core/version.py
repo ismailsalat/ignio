@@ -8,12 +8,28 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.3.2"
+VERSION = "1.4.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Steal Update"
+CODENAME = "Steal & Ship Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.4.0",
+        "date": "2026-06-29",
+        "title": "Steal & Ship Update",
+        "notes": [
+            "Steal rebalanced to be FUN: ~45% win chance — you win and lose often",
+            "Each steal is smaller (1%) so it's addictive but never a money farm",
+            "10 attempts/day, 5-min cooldown, 90-min same-target lockout (spread the love)",
+            "Steal can now be turned off with !disable games or !admin steal off",
+            "Shop picture now shows the new STEAL category (Lockpick + Safe Lock)",
+            "Safe Lock (the anti-steal item) is in the shop, risk-priced, expires in 24h",
+            "NEW !admin item give/take @user <item> [qty] — manage anyone's bag",
+            "NEW !sobship @user — a fun animated love-meter (no sobs involved!)",
+            "All command categories fixed so everything shows in !help and can be disabled",
+        ],
+    },
     {
         "version": "1.3.2",
         "date": "2026-06-29",
