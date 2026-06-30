@@ -67,7 +67,7 @@ class MapGameCog(commands.Cog):
         cur = await self._earned_today(gid, uid)
         await self.repo.set_guild_setting(gid, f"mapgame:earned:{uid}:{_today()}", str(cur + amount))
 
-    @commands.command(name="mapgame", aliases=["map", "guesscountry", "geo"])
+    @commands.command(name="mapgame", aliases=["guesscountry", "geo"])
     @commands.guild_only()
     @commands.cooldown(1, 12, commands.BucketType.channel)
     async def mapgame(self, ctx: commands.Context):

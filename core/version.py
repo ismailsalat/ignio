@@ -8,12 +8,22 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.7.1",
+        "date": "2026-06-29",
+        "title": "Utilities load fix",
+        "notes": [
+            "Fixed UtilitiesCog failing to load: !map collided with the mapgame alias",
+            "!map now belongs to Utilities (place lookup); !mapgame keeps geo/guesscountry",
+            "Added a collision test so two commands can never share a name again",
+        ],
+    },
     {
         "version": "1.7.0",
         "date": "2026-06-29",
