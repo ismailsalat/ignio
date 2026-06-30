@@ -30,12 +30,13 @@ def _err(desc: str) -> discord.Embed:
 class AdminCog(commands.Cog):
     """Owner-only maintenance: server config, data ops, export/import."""
 
-    def __init__(self, bot: commands.Bot, settings, db_manager, sob_repo, profile_service=None):
+    def __init__(self, bot: commands.Bot, settings, db_manager, sob_repo, profile_service=None, shop_repo=None):
         self.bot = bot
         self.settings = settings
         self.db_manager = db_manager
         self.repo = sob_repo
         self.profile = profile_service
+        self.shop_repo = shop_repo
 
     async def _require(self, ctx, perm: str) -> bool:
         """Permission gate: admins/owner always pass; others need the role perm.
@@ -454,19 +455,62 @@ class AdminCog(commands.Cog):
             "Players can buy again." if on else "Nobody can buy any item until you reopen it."))
 
     @admin_group.command(name="item", aliases=["disableitem"])
-    async def admin_item(self, ctx: commands.Context, state: str = None, *, item: str = None):
-        """Disable/enable a single shop item.
-        `!admin item disable audit` · `!admin item enable audit` · `!admin item list`"""
+    async def admin_item(self, ctx: commands.Context, state: str = None, *, rest: str = None):
+        """Disable/enable a shop item, or give/take items from someone's bag.
+        `!admin item disable audit` · `!admin item enable audit` · `!admin item list`
+        `!admin item give @user shield 3` · `!admin item take @user lockpick 1`"""
         if not await self._require(ctx, "managesobs"):
             return
         gid = ctx.guild.id
+
+        # ---- give / take to a user's inventory ----
+        if state and state.lower() in ("give", "grant", "add", "take", "remove"):
+            taking = state.lower() in ("take", "remove")
+            # parse: @user <item> [qty]   (mention may already be resolved in ctx)
+            member = ctx.message.mentions[0] if ctx.message.mentions else None
+            tokens = (rest or "").split()
+            # drop the mention token
+            tokens = [t for t in tokens if not t.startswith("<@")]
+            if member is None or not tokens:
+                await ctx.reply(embed=_err(
+                    f"Usage: `{ctx.prefix}admin item {state} @user <item> [qty]`."))
+                return
+            key = tokens[0].strip().lower()
+            qty = 1
+            if len(tokens) > 1:
+                try:
+                    qty = max(1, int(tokens[1]))
+                except ValueError:
+                    qty = 1
+            from core.shop.catalog import BUILTIN_ITEMS
+            if key not in BUILTIN_ITEMS:
+                await ctx.reply(embed=_err(
+                    f"Unknown item `{key}`. Built-in keys: {', '.join(sorted(BUILTIN_ITEMS))}"))
+                return
+            try:
+                if taking:
+                    removed = await self.shop_repo.admin_take_item(gid, member.id, key, qty)
+                    await ctx.reply(embed=_embed("✅ Item removed",
+                        f"Took **{removed}× {BUILTIN_ITEMS[key]['name']}** from {member.mention}."))
+                else:
+                    await self.shop_repo.admin_give_item(gid, member.id, key, qty)
+                    await ctx.reply(embed=_embed("✅ Item granted",
+                        f"Gave **{qty}× {BUILTIN_ITEMS[key]['name']}** to {member.mention}."))
+            except AttributeError:
+                await ctx.reply(embed=_err("Inventory admin tools aren't wired — update the shop repo."))
+            return
+
+        # ---- disable / enable / list ----
         disabled = self._csv_set(await self.repo.get_guild_setting(gid, "shop:disabled_items"))
         if state in (None, "list"):
             txt = ", ".join(sorted(disabled)) if disabled else "none"
             await ctx.reply(embed=_embed(
-                "Disabled items", f"Currently disabled: **{txt}**\n"
-                f"`{ctx.prefix}admin item disable <key>` · `{ctx.prefix}admin item enable <key>`"))
+                "Shop item controls",
+                f"Disabled items: **{txt}**\n"
+                f"`{ctx.prefix}admin item disable <key>` · `{ctx.prefix}admin item enable <key>`\n"
+                f"`{ctx.prefix}admin item give @user <key> [qty]` · `{ctx.prefix}admin item take @user <key> [qty]`"))
             return
+        item = rest
         if not item:
             await ctx.reply(embed=_err(f"Usage: `{ctx.prefix}admin item disable <item key>`."))
             return
@@ -480,7 +524,7 @@ class AdminCog(commands.Cog):
             await self._save_csv(gid, "shop:disabled_items", disabled)
             await ctx.reply(embed=_embed("✅ Item enabled", f"**{key}** is buyable again."))
         else:
-            await ctx.reply(embed=_err(f"Use `disable` or `enable`. Example: `{ctx.prefix}admin item disable audit`."))
+            await ctx.reply(embed=_err(f"Use `disable`, `enable`, `give`, or `take`. Example: `{ctx.prefix}admin item disable audit`."))
 
     @admin_group.command(name="category", aliases=["cat", "disablecat"])
     async def admin_category(self, ctx: commands.Context, state: str = None, *, category: str = None):

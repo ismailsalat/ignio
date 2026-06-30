@@ -39,7 +39,7 @@ def _grouped_from_catalog(catalog, only_category=None):
     """Turn the catalog into {category: [ {key,name,price,stackable} ]} for the
     picture renderer."""
     from core.shop.catalog import BUILTIN_ITEMS
-    order = [only_category] if only_category else ["protection", "debuff", "buff", "server"]
+    order = [only_category] if only_category else ["protection", "debuff", "buff", "steal", "server"]
     grouped = {}
     for cat in order:
         items = []

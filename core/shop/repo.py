@@ -233,9 +233,29 @@ class ShopRepo:
         )
         return cur.rowcount > 0
 
-    # ------------------------------------------------------------------
-    # buying
-    # ------------------------------------------------------------------
+    async def admin_give_item(self, guild_id: int, user_id: int, item_key: str, qty: int = 1) -> None:
+        """Admin: drop items straight into a user's bag (no charge). Respects the
+        24h expiry rule for protection/steal items via _add_to_inventory."""
+        import time as _t
+        db = await self._db()
+        async with db.key_lock("inv", guild_id, user_id):
+            async with db.transaction() as conn:
+                await self._add_to_inventory(conn, guild_id, user_id, item_key, max(1, qty), int(_t.time()))
+
+    async def admin_take_item(self, guild_id: int, user_id: int, item_key: str, qty: int = 1) -> int:
+        """Admin: remove up to `qty` of an item from a user's bag. Returns how
+        many were actually removed (capped at what they hold)."""
+        import time as _t
+        db = await self._db()
+        async with db.key_lock("inv", guild_id, user_id):
+            inv = await self.get_inventory(guild_id, user_id)
+            have = int(inv.get(item_key, 0))
+            take = min(have, max(1, qty))
+            if take <= 0:
+                return 0
+            async with db.transaction() as conn:
+                await self._take_from_inventory(conn, guild_id, user_id, item_key, take, int(_t.time()))
+            return take
 
     async def buy(self, guild_id: int, user_id: int, item_key: str, qty: int = 1) -> tuple[bool, str, dict | None]:
         """Spend sobs to add an item to inventory.

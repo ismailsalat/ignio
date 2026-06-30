@@ -27,6 +27,7 @@ from core.economy_cog import EconomyCog
 from core.daily_cog import DailyCog
 from core.games.roulette_cog import RouletteCog
 from core.games.steal_cog import StealCog
+from core.games.sobship_cog import SobShipCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -93,7 +94,7 @@ async def run() -> None:
         await db_manager.get()
         for name, cog in (
             ("SobCog", SobCog(bot, settings, sob_repo, shop_repo, profile_service, economy)),
-            ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo, profile_service)),
+            ("AdminCog", AdminCog(bot, settings, db_manager, sob_repo, profile_service, shop_repo)),
             ("ShopCog", ShopCog(bot, settings, shop_repo, sob_repo, economy)),
             ("HelpCog", HelpCog(bot, settings)),
             ("PermsCog", PermsCog(bot, settings, sob_repo)),
@@ -104,6 +105,7 @@ async def run() -> None:
             ("AboutCog", AboutCog(bot, settings, sob_repo)),
             ("RouletteCog", RouletteCog(bot, settings, sob_repo, games_engine)),
             ("StealCog", StealCog(bot, settings, sob_repo, economy, shop_repo, protection)),
+            ("SobShipCog", SobShipCog(bot, settings)),
         ):
             try:
                 await bot.add_cog(cog)

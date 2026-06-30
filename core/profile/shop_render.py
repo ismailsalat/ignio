@@ -17,10 +17,12 @@ CAT_COLORS = {
     "protection": (90, 160, 240),
     "debuff": (120, 200, 230),
     "buff": (245, 180, 70),
+    "steal": (235, 120, 110),
     "server": (200, 150, 240),
 }
 CAT_LABELS = {
-    "protection": "PROTECTION", "debuff": "DEBUFF", "buff": "BUFF", "server": "SERVER ITEMS",
+    "protection": "PROTECTION", "debuff": "DEBUFF", "buff": "BUFF",
+    "steal": "STEAL", "server": "SERVER ITEMS",
 }
 # which glyph to draw per item key
 GLYPHS = {
@@ -28,6 +30,7 @@ GLYPHS = {
     "freeze": "freeze", "freeze_deep": "freeze", "audit": "coin", "heist": "skull",
     "slow_curse": "slow", "marked": "target", "jail": "lock",
     "boost": "bolt", "boost_adv": "bolt", "hunter": "bolt", "lucky": "clover", "king": "crown",
+    "vault_ward": "ward", "lockpick": "lock", "safelock": "shield",
 }
 
 
@@ -106,7 +109,7 @@ def make_shop_card(balance: int, grouped: dict, only_category: str | None = None
         cats = [only_category] if grouped.get(only_category) else []
         detail = True
     else:
-        cats = [c for c in ["protection", "debuff", "buff", "server"] if grouped.get(c)]
+        cats = [c for c in ["protection", "debuff", "buff", "steal", "server"] if grouped.get(c)]
         detail = False
 
     # build the row list, honoring preview/pagination
