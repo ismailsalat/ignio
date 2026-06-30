@@ -31,30 +31,34 @@ from datetime import datetime, timezone
 from core import ledger
 
 # ---- tunables (admin-overridable via guild_settings) -----------------------
-STEAL_PCT = 0.0125            # 1.25% of risk balance per successful hit
+# Tuned to be ADDICTIVE: you win often AND lose often (roughly a coin flip),
+# each hit is small so it never becomes a real income source, the fee on a miss
+# is light enough to keep playing, and you can hit many DIFFERENT people per day
+# but not farm the same person.
+STEAL_PCT = 0.010            # 1% of risk balance per successful hit (small)
 STEAL_MIN = 5
-STEAL_HARD_CAP = 50_000       # absolute max a single steal can move
-BASE_CHANCE = 18              # %
-HUNTER_SHARE = 0.90           # hunter keeps 90% on success
+STEAL_HARD_CAP = 25_000       # absolute max a single steal can move
+BASE_CHANCE = 45              # % — a real gamble, but you win plenty
+HUNTER_SHARE = 0.60           # hunter keeps 60% on success (rest to treasury)
 TAX_PCT = 10                  # 10% of the stolen amount -> treasury
-FAIL_FEE_PCT = 0.20           # caught fee = 20% of planned (half tax / half burn)
+FAIL_FEE_PCT = 0.40           # caught fee = 40% of planned (half tax / half burn)
 
-DAILY_VICTIM_PCT = 0.04       # a target can lose at most 4% of risk bal/day
-DAILY_VICTIM_HARD = 50_000    # and never more than this absolute per day
-MIN_TARGET_BALANCE = 500      # target must have at least this to be worth it
+DAILY_VICTIM_PCT = 0.05       # a target can lose at most 5% of risk bal/day
+DAILY_VICTIM_HARD = 25_000    # and never more than this absolute per day
+MIN_TARGET_BALANCE = 300      # target must have at least this to be worth it
 PROTECTED_FLOOR = 50          # never drain a target below this with a steal
 
-ATTACKER_COOLDOWN = 15 * 60   # 15 min between attempts
-ATTACKER_DAILY_ATTEMPTS = 4   # max valid attempts/day
-PER_TARGET_LOCKOUT = 60 * 60  # can't re-hit the same target for 60 min
-TARGET_IMMUNITY = 30 * 60     # 30 min immunity after a SUCCESSFUL steal
+ATTACKER_COOLDOWN = 5 * 60    # 5 min between attempts (do it often)
+ATTACKER_DAILY_ATTEMPTS = 10  # up to 10 attempts/day
+PER_TARGET_LOCKOUT = 90 * 60  # can't re-hit the SAME target for 90 min (spread out)
+TARGET_IMMUNITY = 45 * 60     # 45 min immunity after being successfully hit
 
-LOCKPICK_BONUS = 4            # +4 points
-SAFELOCK_REDUCTION = 5       # -5 points
-CHANCE_FLOOR = 8
-CHANCE_CEIL = 25
+LOCKPICK_BONUS = 8           # +8 points (lockpick feels worth it)
+SAFELOCK_REDUCTION = 12      # -12 points (safe lock is a real defense)
+CHANCE_FLOOR = 20            # never below 20%
+CHANCE_CEIL = 70            # never above 70%
 
-SAFELOCK_DURATION = 20 * 60   # 20 min
+SAFELOCK_DURATION = 30 * 60   # 30 min
 
 
 def _today() -> str:

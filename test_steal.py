@@ -42,9 +42,9 @@ async def test_amount_formula():
         uid = 10+i; await fund(sob, uid, b)
         p = await steal.planned_steal(GID, uid)
         print(f"  {b:>8} | {p}")
-        if b == 10000: check("10k -> ~125 planned", p == 125)
-        if b == 1000: check("1k -> ~12 planned", p == 12)
-        check(f"[{b}] planned never exceeds 50k cap", p <= 50000)
+        if b == 10000: check("10k -> ~100 planned", p == 100)
+        if b == 1000: check("1k -> ~10 planned", p == 10)
+        check(f"[{b}] planned never exceeds 25k cap", p <= 25000)
         check(f"[{b}] planned at least {STEAL_MIN}", p >= STEAL_MIN)
     await db.close()
 
@@ -57,11 +57,11 @@ async def test_odds_clamps():
     # lockpick +4
     dbo = await shop._db(); await shop._add_to_inventory(dbo, GID, a, "lockpick", 1, int(time.time())); await dbo.commit()
     pv2 = await steal.preview(GID, a, t, use_lockpick=True)
-    check("lockpick adds +4 points", pv2["chance"] == BASE_CHANCE + 4)
+    check("lockpick adds +8 points", pv2["chance"] == BASE_CHANCE + 8)
     # safe lock -5 on target
     await shop.add_effect(GID, t, "safelock", source_user_id=t, expires_at=int(time.time())+1200)
     pv3 = await steal.preview(GID, a, t)
-    check("safe lock reduces 5 points", pv3["chance"] == BASE_CHANCE - 5)
+    check("safe lock reduces 12 points", pv3["chance"] == BASE_CHANCE - 12)
     await db.close()
 
 async def test_success_economics():
@@ -81,8 +81,8 @@ async def test_success_economics():
         check("forced success returns success", res["success"])
         planned = res["planned"]
         check("target lost exactly planned", await bal(sob, t) == tb0 - planned)
-        check("hunter gained 90% of planned", res["gain"] == int(planned*0.9))
-        check("tax is 10%", res["tax"] == planned - int(planned*0.9))
+        check("hunter gained 60% of planned", res["gain"] == int(planned*0.6))
+        check("rest goes to treasury", res["tax"] == planned - int(planned*0.6))
         check("conserved: target loss == hunter gain + tax", planned == res["gain"] + res["tax"])
     finally:
         S.secrets.randbelow = orig
