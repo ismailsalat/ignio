@@ -8,12 +8,25 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Steal & Ship Update"
+CODENAME = "Map Game Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.5.0",
+        "date": "2026-06-29",
+        "title": "Map Game Update",
+        "notes": [
+            "NEW !mapgame — guess the country the arrow points to on a world map",
+            "68 well-known countries including island nations like Fiji (no obscure micro-states)",
+            "Correct guesses pay sob (3-8 by difficulty) up to a 60/day cap, then free for fun",
+            "Clean cream-and-blue world map with a glowing red target + arrow",
+            "Accepts aliases (usa, america, uk, nz...) and is case-insensitive",
+            "Admins: !admin mapgame on/off; it's in the Games category and !help",
+        ],
+    },
     {
         "version": "1.4.3",
         "date": "2026-06-29",

@@ -670,6 +670,23 @@ class AdminCog(commands.Cog):
         await ctx.reply(embed=_embed("✅ Steal chance set",
             f"Base steal success chance is now **{c}%** (clamped to {S.CHANCE_FLOOR}–{S.CHANCE_CEIL}%)."))
 
+    @admin_group.command(name="mapgame", aliases=["map"])
+    async def admin_mapgame(self, ctx: commands.Context, state: str = None):
+        """Turn the !mapgame country game on or off."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            off = (await self.repo.get_guild_setting(gid, "mapgame:enabled")) == "0"
+            await ctx.reply(embed=_embed("Map game status",
+                f"!mapgame is **{'OFF 🔒' if off else 'ON ✅'}**.\n"
+                f"`{ctx.prefix}admin mapgame on|off`"))
+            return
+        on = state.lower() in ("on", "yes", "enable", "enabled", "1", "true")
+        await self.repo.set_guild_setting(gid, "mapgame:enabled", "1" if on else "0")
+        await ctx.reply(embed=_embed("🗺️ Map game " + ("enabled ✅" if on else "disabled 🔒"),
+            "Players can play !mapgame again." if on else "!mapgame is turned off."))
+
     @admin_group.group(name="audit", invoke_without_command=True)
     async def admin_audit(self, ctx: commands.Context, member: discord.Member = None, page: int = 0):
         """Trace where a user's sobs came from — to spot exploits.

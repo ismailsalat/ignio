@@ -32,6 +32,8 @@ COMMAND_CATEGORY: dict[str, str] = {
     "roulettestats": "games",
     "steal": "games",
     "sobship": "games",
+    "mapgame": "games",
+    "map": "games",
     # Profile (the !sob set lives under sob, but the card itself is 'sobs')
     # Admin / config (never disablable)
     "admin": "admin",

@@ -37,7 +37,7 @@ def category_embed(cat: str, prefix: str, is_admin: bool, is_owner: bool) -> dis
         groups = {
             "Economy controls": ["admin freeze", "admin shop", "admin item", "admin category",
                                   "admin auditcap", "admin auditcd", "admin altblock", "admin tips",
-                                  "admin protection", "admin steal", "admin steal config",
+                                  "admin protection", "admin steal", "admin steal config", "admin mapgame",
                                   "tax", "multiplier", "rate set", "rebalance"],
             "Audit & investigation": ["admin audit", "admin audit tx", "admin suspicious",
                                        "admin weekly", "admin export", "admin auditexport"],
