@@ -86,6 +86,7 @@ COMMANDS = [
     {"name": "admin steal", "cat": "admin", "desc": "Turn !steal on/off for the server", "usage": "admin steal on|off", "admin": True},
     {"name": "admin steal config", "cat": "admin", "desc": "View/tune steal chance, caps, cooldowns", "usage": "admin steal config [chance]", "admin": True},
     {"name": "admin mapgame", "cat": "admin", "desc": "Turn the !mapgame country game on/off", "usage": "admin mapgame on|off", "admin": True},
+    {"name": "admin mapflag", "cat": "admin", "desc": "Turn the !mapflag flag-race game on/off", "usage": "admin mapflag on|off", "admin": True},
     {"name": "admin altblock", "cat": "admin", "desc": "Block/flag alt-farm reactions", "usage": "admin altblock on|off", "admin": True},
     {"name": "admin tips", "cat": "admin", "desc": "Shield reminders on/off for the whole server", "usage": "admin tips on|off", "admin": True},
 
@@ -118,6 +119,8 @@ COMMANDS = [
     {"name": "steal stats", "cat": "games", "desc": "Your steal record (profit, attempts, immunity)", "usage": "steal stats"},
     {"name": "sobship", "cat": "games", "desc": "Fun love-meter between two people (no sobs involved)", "usage": "sobship @user [@user2]"},
     {"name": "mapgame", "cat": "games", "desc": "Guess the country the arrow points to — pays sob (daily cap)", "usage": "mapgame"},
+    {"name": "mapflag", "cat": "games", "desc": "Server race: first to name the flag wins sob (daily cap)", "usage": "mapflag"},
+    {"name": "flag", "cat": "games", "desc": "Red Flag / Green Flag — vote on spicy scenarios (no sob, just fun)", "usage": "flag [@user]"},
 
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},

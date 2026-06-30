@@ -22,7 +22,7 @@ class SobShipCog(commands.Cog):
 
     @commands.command(name="sobship", aliases=["ship", "lovemeter", "match"])
     @commands.guild_only()
-    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.cooldown(1, 8, commands.BucketType.user)
     async def sobship(self, ctx: commands.Context, a: discord.Member = None,
                       b: discord.Member = None):
         """Measure the ~love~ between two people. `!sobship @user` or

@@ -51,6 +51,7 @@ class MapGameCog(commands.Cog):
         self.settings = settings
         self.repo = sob_repo
         self.economy = economy
+        self._active: set[int] = set()    # channel_ids with a running round
 
     async def _enabled(self, gid: int) -> bool:
         return (await self.repo.get_guild_setting(gid, "mapgame:enabled")) != "0"
@@ -68,14 +69,26 @@ class MapGameCog(commands.Cog):
 
     @commands.command(name="mapgame", aliases=["map", "guesscountry", "geo"])
     @commands.guild_only()
-    @commands.cooldown(1, 4, commands.BucketType.user)
+    @commands.cooldown(1, 12, commands.BucketType.channel)
     async def mapgame(self, ctx: commands.Context):
         """Guess the country the arrow points to. Pays a little sob (daily cap)."""
         gid = ctx.guild.id
         if not await self._enabled(gid):
             await ctx.reply(embed=discord.Embed(description="The map game is disabled here.", color=RED))
             return
+        # one active map per channel, so the channel never floods with maps
+        if ctx.channel.id in self._active:
+            await ctx.reply(embed=discord.Embed(
+                description="A map round is already running here — answer that one first!",
+                color=ACCENT))
+            return
+        self._active.add(ctx.channel.id)
+        try:
+            await self._run_round(ctx, gid)
+        finally:
+            self._active.discard(ctx.channel.id)
 
+    async def _run_round(self, ctx, gid):
         country = secrets.choice(COUNTRIES)
         reward = REWARD_BY_DIFFICULTY.get(country["difficulty"], 3)
         earned = await self._earned_today(gid, ctx.author.id)

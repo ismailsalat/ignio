@@ -8,12 +8,26 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Map Game Update"
+CODENAME = "Flag Games Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.6.0",
+        "date": "2026-06-29",
+        "title": "Flag Games Update",
+        "notes": [
+            "NEW !mapflag — server flag RACE: first to name the flag wins sob (daily cap)",
+            "  one winner per round, claimed atomically (no double-pay exploits)",
+            "NEW !flag — Red Flag / Green Flag voting game with buttons + live tally",
+            "  spicy/funny scenarios, can be aimed at someone with !flag @user, no sob",
+            "Anti-spam: big games (map/flag) are 12s per-CHANNEL and only one runs at a time",
+            "Channels won't flood — a new round can't start until the current one ends",
+            "Both games are in the Games category, in !help, and admin-toggleable",
+        ],
+    },
     {
         "version": "1.5.0",
         "date": "2026-06-29",

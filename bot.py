@@ -29,6 +29,8 @@ from core.games.roulette_cog import RouletteCog
 from core.games.steal_cog import StealCog
 from core.games.sobship_cog import SobShipCog
 from core.games.mapgame_cog import MapGameCog
+from core.games.flaggame_cog import FlagGameCog
+from core.games.redgreen_cog import RedGreenCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -108,6 +110,8 @@ async def run() -> None:
             ("StealCog", StealCog(bot, settings, sob_repo, economy, shop_repo, protection)),
             ("SobShipCog", SobShipCog(bot, settings)),
             ("MapGameCog", MapGameCog(bot, settings, sob_repo, economy)),
+            ("FlagGameCog", FlagGameCog(bot, settings, sob_repo, economy)),
+            ("RedGreenCog", RedGreenCog(bot, settings)),
         ):
             try:
                 await bot.add_cog(cog)
