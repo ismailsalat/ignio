@@ -1,16 +1,16 @@
 # core/games/sobship_render.py
 """
 !sobship — a fun love-meter (no sobs involved). Renders an animated GIF of a
-heart filling up to a deterministic compatibility score for a pair of people.
+heart filling up to a random compatibility score for a pair of people.
 
-Deterministic: the same two users always get the same score (order-independent),
-so it's a repeatable bit of fun, not random each call.
+The score is rolled fresh on every call, so the same two people can get a
+different result each time — it's pure fun, never touches anyone's balance.
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import math
+import secrets
 
 from PIL import Image, ImageDraw
 from core.profile.render import f_title, f_label, f_num, f_reg, _round_mask, _text_w, clean_name
@@ -24,24 +24,24 @@ HEART = (235, 84, 110)
 HEART_SOFT = (245, 140, 165)
 GOLD = (240, 177, 50)
 
-W, H = 720, 480
+W, H = 720, 490
 
 
-def ship_score(a_id: int, b_id: int) -> int:
-    """Deterministic 0-100 score for a pair, independent of order."""
-    lo, hi = sorted((int(a_id), int(b_id)))
-    h = hashlib.sha256(f"{lo}:{hi}:sobship".encode()).hexdigest()
-    return int(h[:8], 16) % 101
+def ship_score(a_id: int = 0, b_id: int = 0) -> int:
+    """A fresh random 0-100 love score every time it's called. (IDs are accepted
+    for signature compatibility but no longer make it deterministic.)"""
+    return secrets.randbelow(101)
 
 
-def _verdict(score: int) -> tuple[str, tuple]:
-    if score >= 90:   return "Soulmates", (235, 84, 110)
-    if score >= 75:   return "A perfect match!", (240, 120, 150)
-    if score >= 60:   return "Strong sparks", (240, 150, 90)
-    if score >= 45:   return "There's potential", (240, 177, 50)
-    if score >= 30:   return "Just friends", (130, 180, 230)
-    if score >= 15:   return "It's complicated", (150, 147, 165)
-    return "Better as strangers", (120, 120, 135)
+def _verdict(score: int):
+    """Returns (verdict, color, flavor) for a score."""
+    if score >= 90:   return "Soulmates", (235, 84, 110), "the stars aligned for this one"
+    if score >= 75:   return "A perfect match!", (240, 120, 150), "someone get the wedding planner"
+    if score >= 60:   return "Strong sparks", (240, 150, 90), "there's definitely something here"
+    if score >= 45:   return "There's potential", (240, 177, 50), "could go either way... exciting"
+    if score >= 30:   return "Just friends", (130, 180, 230), "the friendzone is cozy, tbf"
+    if score >= 15:   return "It's complicated", (150, 147, 165), "it's giving... chaos"
+    return "Better as strangers", (120, 120, 135), "maybe just wave from afar"
 
 
 def _heart_points(cx, cy, size):
@@ -123,14 +123,17 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
     d.text((cx - _text_w(d, pct_txt, f_num(46)) // 2, cy - 28), pct_txt, font=f_num(46),
            fill=(255, 255, 255))
 
-    # verdict (only once filled) — sits in a band at the very bottom
+    # verdict (only once filled) — pill + a little flavor line beneath it
     if show_score:
-        verdict, vcol = _verdict(final_score)
+        verdict, vcol, flavor = _verdict(final_score)
         vt = f_label(22)
         vw = _text_w(d, verdict, vt)
         bw = max(220, vw + 60)
-        d.rounded_rectangle([W // 2 - bw // 2, 424, W // 2 + bw // 2, 466], radius=18, fill=PANEL)
-        d.text((W // 2 - vw // 2, 434), verdict, font=vt, fill=vcol)
+        d.rounded_rectangle([W // 2 - bw // 2, 408, W // 2 + bw // 2, 450], radius=18, fill=PANEL)
+        d.text((W // 2 - vw // 2, 418), verdict, font=vt, fill=vcol)
+        ff = f_reg(16)
+        fw = _text_w(d, flavor, ff)
+        d.text((W // 2 - fw // 2, 458), flavor, font=ff, fill=DIM)
 
     img.putalpha(_round_mask((W, H), 28))
     return img

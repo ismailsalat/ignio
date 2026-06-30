@@ -1,7 +1,7 @@
 # core/games/sobship_cog.py
 """
 !sobship @user — a fun love-meter (no sobs involved). Renders an animated GIF of
-a heart filling to a deterministic compatibility score for the pair.
+a heart filling to a freshly-rolled compatibility score for the pair.
 
 Pure fun: it never touches anyone's balance, inventory, or stats.
 """

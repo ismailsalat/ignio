@@ -8,12 +8,22 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Steal & Ship Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.4.3",
+        "date": "2026-06-29",
+        "title": "Sob-Ship is random + flavor",
+        "notes": [
+            "!sobship now rolls a fresh random score every time (no more same number)",
+            "Each result gets a fun one-line flavor under the verdict",
+            "Names stay in clean chips; no overlap at any length",
+        ],
+    },
     {
         "version": "1.4.2",
         "date": "2026-06-29",
