@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.8.2",
+        "date": "2026-06-29",
+        "title": "env template fix",
+        "notes": [
+            "Fixed .env.example to match the real config (IGNIO_ENV, DISCORD_TOKEN_DEV,",
+            "  COMMAND_PREFIX_DEV) instead of wrong names",
+            "All keys live in ONE .env file — the LLM key goes alongside your bot token",
+            "No second env file is needed",
+        ],
+    },
     {
         "version": "1.8.1",
         "date": "2026-06-29",
