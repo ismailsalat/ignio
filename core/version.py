@@ -8,12 +8,28 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Flag Games Update"
+CODENAME = "Utilities Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.7.0",
+        "date": "2026-06-29",
+        "title": "Utilities Update",
+        "notes": [
+            "NEW lightweight Utilities category: catchup, tldr, song, xray, map,",
+            "  weather, translate, caption, quote, afk (see !help utilities)",
+            "Quote + caption image cards, AFK with auto-clear + anti-spam notices",
+            "Link X-ray with strong SSRF protection (blocks private/loopback/metadata)",
+            "Shared job manager: cooldowns, per-guild caps, dedup, temp-file cleanup",
+            "Privacy-first: no messages/media/URLs/transcripts are ever stored",
+            "Every response uses AllowedMentions.none() — the bot never pings anyone",
+            "External providers are optional via env; missing ones fail gracefully",
+            "Whole category is admin-toggleable: !admin utilities on/off",
+        ],
+    },
     {
         "version": "1.6.0",
         "date": "2026-06-29",

@@ -504,6 +504,17 @@ CREATE INDEX IF NOT EXISTS idx_steal_day      ON steal_events(guild_id, day);
 """
 
 
+_AFK_STATUS = """
+CREATE TABLE IF NOT EXISTS afk_status (
+    guild_id   INTEGER NOT NULL,
+    user_id    INTEGER NOT NULL,
+    reason     TEXT    NOT NULL DEFAULT '',
+    since_ts   INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+);
+"""
+
+
 MIGRATIONS = [
     (200, "infra_keep", _INFRA),
     (201, "sob_clean_tables", _SOB_CORE),
@@ -522,6 +533,7 @@ MIGRATIONS = [
     (214, "game_escrow", _GAME_ESCROW),
     (215, "protection_inventory_expiry", _PROTECTION_EXPIRY),
     (216, "steal_events", _STEAL_EVENTS),
+    (217, "afk_status", _AFK_STATUS),
 ]
 
 # Legacy tables the backfill reads from. The migration runner skips the

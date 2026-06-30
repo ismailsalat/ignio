@@ -22,6 +22,7 @@ CATEGORIES = {
     "profile": ("🎴", "Profile"),
     "shop":    ("🛒", "Shop"),
     "games":   ("🎲", "Games"),
+    "utilities": ("🧰", "Utilities"),
     "economy": ("😭", "Economy"),
     "admin":   ("🛡️", "Admin"),
     "info":    ("ℹ️", "Info"),
@@ -87,6 +88,7 @@ COMMANDS = [
     {"name": "admin steal config", "cat": "admin", "desc": "View/tune steal chance, caps, cooldowns", "usage": "admin steal config [chance]", "admin": True},
     {"name": "admin mapgame", "cat": "admin", "desc": "Turn the !mapgame country game on/off", "usage": "admin mapgame on|off", "admin": True},
     {"name": "admin mapflag", "cat": "admin", "desc": "Turn the !mapflag flag-race game on/off", "usage": "admin mapflag on|off", "admin": True},
+    {"name": "admin utilities", "cat": "admin", "desc": "Turn the whole Utilities category on/off", "usage": "admin utilities on|off", "admin": True},
     {"name": "admin altblock", "cat": "admin", "desc": "Block/flag alt-farm reactions", "usage": "admin altblock on|off", "admin": True},
     {"name": "admin tips", "cat": "admin", "desc": "Shield reminders on/off for the whole server", "usage": "admin tips on|off", "admin": True},
 
@@ -121,6 +123,17 @@ COMMANDS = [
     {"name": "mapgame", "cat": "games", "desc": "Guess the country the arrow points to — pays sob (daily cap)", "usage": "mapgame"},
     {"name": "mapflag", "cat": "games", "desc": "Server race: first to name the flag wins sob (daily cap)", "usage": "mapflag"},
     {"name": "flag", "cat": "games", "desc": "Red Flag / Green Flag — vote on spicy scenarios (no sob, just fun)", "usage": "flag [@user]"},
+    {"name": "catchup", "cat": "utilities", "desc": "Summarize the recent channel, or reply to a message for its backstory", "usage": "catchup [5m|15m|30m|1h|2h|4h]"},
+    {"name": "tldr", "cat": "utilities", "desc": "Shorten a message, link, or replied content into a few bullets", "usage": "tldr [text] (or reply)"},
+    {"name": "song", "cat": "utilities", "desc": "Identify the song in a replied video/clip", "usage": "song (reply) "},
+    {"name": "xray", "cat": "utilities", "desc": "Safely inspect where a link really goes", "usage": "xray <url> (or reply)"},
+    {"name": "map", "cat": "utilities", "desc": "Show a clean static map of a place", "usage": "map <place>"},
+    {"name": "weather", "cat": "utilities", "desc": "Current weather for a place", "usage": "weather <place>"},
+    {"name": "translate", "cat": "utilities", "desc": "Translate or explain a message", "usage": "translate <lang> [text] (or reply)"},
+    {"name": "caption", "cat": "utilities", "desc": "Caption a replied image", "usage": "caption <text> (reply to image)"},
+    {"name": "quote", "cat": "utilities", "desc": "Make a clean quote card from a message", "usage": "quote (reply)"},
+    {"name": "afk", "cat": "utilities", "desc": "Set an AFK note; clears when you talk again", "usage": "afk [reason]"},
+
 
     # ---- Info ----
     {"name": "help", "cat": "info", "desc": "This menu", "usage": "help"},

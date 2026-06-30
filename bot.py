@@ -31,6 +31,7 @@ from core.games.sobship_cog import SobShipCog
 from core.games.mapgame_cog import MapGameCog
 from core.games.flaggame_cog import FlagGameCog
 from core.games.redgreen_cog import RedGreenCog
+from core.utilities.cog import UtilitiesCog
 
 logging.basicConfig(level=logging.INFO)
 
@@ -112,6 +113,7 @@ async def run() -> None:
             ("MapGameCog", MapGameCog(bot, settings, sob_repo, economy)),
             ("FlagGameCog", FlagGameCog(bot, settings, sob_repo, economy)),
             ("RedGreenCog", RedGreenCog(bot, settings)),
+            ("UtilitiesCog", UtilitiesCog(bot, settings, sob_repo)),
         ):
             try:
                 await bot.add_cog(cog)

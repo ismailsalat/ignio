@@ -36,6 +36,16 @@ COMMAND_CATEGORY: dict[str, str] = {
     "map": "games",
     "mapflag": "games",
     "flag": "games",
+    "catchup": "utilities",
+    "tldr": "utilities",
+    "song": "utilities",
+    "xray": "utilities",
+    "map": "utilities",
+    "weather": "utilities",
+    "translate": "utilities",
+    "caption": "utilities",
+    "quote": "utilities",
+    "afk": "utilities",
     # Profile (the !sob set lives under sob, but the card itself is 'sobs')
     # Admin / config (never disablable)
     "admin": "admin",
@@ -49,7 +59,7 @@ COMMAND_CATEGORY: dict[str, str] = {
     "treasury": "admin",
 }
 
-CATEGORIES = ("sobs", "shop", "profile", "games", "admin")
+CATEGORIES = ("sobs", "shop", "profile", "games", "utilities", "admin")
 PROTECTED_CATEGORIES = {"admin"}  # never disablable
 
 

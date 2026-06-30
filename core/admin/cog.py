@@ -670,6 +670,23 @@ class AdminCog(commands.Cog):
         await ctx.reply(embed=_embed("✅ Steal chance set",
             f"Base steal success chance is now **{c}%** (clamped to {S.CHANCE_FLOOR}–{S.CHANCE_CEIL}%)."))
 
+    @admin_group.command(name="utilities", aliases=["utils"])
+    async def admin_utilities(self, ctx: commands.Context, state: str = None):
+        """Turn the whole Utilities category on or off."""
+        if not await self._require(ctx, "managesobs"):
+            return
+        gid = ctx.guild.id
+        if state is None:
+            off = (await self.repo.get_guild_setting(gid, "utilities:enabled")) == "0"
+            await ctx.reply(embed=_embed("Utilities status",
+                f"Utilities are **{'OFF 🔒' if off else 'ON ✅'}**.\n"
+                f"`{ctx.prefix}admin utilities on|off`"))
+            return
+        on = state.lower() in ("on", "yes", "enable", "enabled", "1", "true")
+        await self.repo.set_guild_setting(gid, "utilities:enabled", "1" if on else "0")
+        await ctx.reply(embed=_embed("🧰 Utilities " + ("enabled ✅" if on else "disabled 🔒"),
+            "All utility commands are available again." if on else "Utility commands are turned off."))
+
     @admin_group.command(name="mapflag", aliases=["flaggame"])
     async def admin_mapflag(self, ctx: commands.Context, state: str = None):
         """Turn the !mapflag flag-race game on or off."""
