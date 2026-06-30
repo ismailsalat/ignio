@@ -234,11 +234,71 @@ def test_catchup_command_filter():
     check("keeps a real sentence", not is_spam("did you see the game last night it was wild"))
 
 
+
+
+# ---- added v1.9.1: tenor, map zoom, animated caption, media blocked ----
+def test_tenor():
+    from core.utilities import providers as P
+    check("tenor view url detected", P.is_tenor_url("https://tenor.com/view/holaa-gif-7220205024135693548"))
+    check("non-tenor not detected", not P.is_tenor_url("https://example.com/x"))
+
+
+def test_map_zoom():
+    from core.utilities.providers import _zoom_for_type
+    usa = _zoom_for_type("country", ["24.5", "49.4", "-125", "-66"])
+    wa = _zoom_for_type("state", ["45.5", "49.0", "-124.8", "-116.9"])
+    sea = _zoom_for_type("city", ["47.49", "47.73", "-122.45", "-122.22"])
+    mog = _zoom_for_type("city", ["2.0", "2.1", "45.3", "45.4"])
+    check("USA gets country-level zoom", usa <= 4)
+    check("Washington gets region zoom", 4 <= wa <= 7)
+    check("Seattle gets city zoom", 8 <= sea <= 12)
+    check("Mogadishu gets city zoom", 8 <= mog <= 12)
+    check("country zoom < city zoom", usa < sea)
+
+
+def test_animated_caption():
+    from core.utilities.cards import caption_gif
+    from PIL import Image
+    import io as _io
+    frames = [Image.new("RGB", (150, 150), (i*50, 40, 80)) for i in range(4)]
+    b = _io.BytesIO(); frames[0].save(b, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    b.seek(0); gif = Image.open(b)
+    out, kept = caption_gif(gif, "test")
+    data = out.read()
+    check("animated caption preserves GIF", kept and data[:6] in (b"GIF87a", b"GIF89a"))
+    # oversized -> first-frame fallback
+    big = [Image.new("RGB", (1400, 1400), (i*50, 40, 80)) for i in range(2)]
+    b2 = _io.BytesIO(); big[0].save(b2, format="GIF", save_all=True, append_images=big[1:], duration=100)
+    b2.seek(0); biggif = Image.open(b2)
+    out2, kept2 = caption_gif(biggif, "x")
+    check("oversized GIF falls back to first frame", not kept2)
+
+
+def test_media_blocked():
+    from core.utilities.cog import _media_error
+    check("temporarily_blocked has clean message",
+          "could not access a downloadable public video" in _media_error("temporarily_blocked").lower())
+    check("blocked is not a crash/technical msg", "error" not in _media_error("temporarily_blocked").lower())
+
+
+def test_afk_text():
+    # the ago helper reads naturally
+    from core.utilities.cog import _ago
+    check("ago: hours plural", _ago(3*3600) == "3 hours ago")
+    check("ago: 1 hour singular", _ago(3600) == "1 hour ago")
+    check("ago: minutes", _ago(120) == "2 minutes ago")
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
     test_catchup_command_filter()
     check("qoute alias maps to quote", asyncio.run(test_qoute_alias()))
+    test_tenor()
+    test_map_zoom()
+    test_animated_caption()
+    test_media_blocked()
+    test_afk_text()
 
 
 if __name__ == "__main__":

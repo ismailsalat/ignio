@@ -156,14 +156,20 @@ class UtilitiesCog(commands.Cog):
                     f"• (I read {len(msgs)} recent messages but won't store them.)")
         joined = "\n".join(m[:300] for m in msgs)[:6000]
         if reply:
-            system = ("You explain what was happening in a Discord chat around a message. "
-                      "Output 3-4 short bullets: how it started, the main topic, the "
-                      "confusion/debate, what it became. Neutral, no usernames, no slurs.")
+            system = ("You explain what led to a specific Discord message, in 2-4 short bullets. "
+                      "Be natural and neutral. Explain how it started, the misunderstanding if any, "
+                      "and what it became. No usernames unless needed, no slurs, no filler.")
             prompt = f"Messages around the target (oldest first):\n{joined}"
         else:
-            system = ("You catch someone up on a Discord channel. Output 5-6 short bullets: "
-                      "main topic, what changed, any important link/event, the current "
-                      "joke/debate, any unanswered question. Neutral, concise, no usernames.")
+            system = ("You catch a friend up on a Discord channel in AT MOST 4 short bullets — fewer is "
+                      "better. Only mention things that ACTUALLY happened: a decision, an event time, a "
+                      "question people are answering, an argument, or what a discussed link/clip was about. "
+                      "If it was mostly memes/chat, say that plainly and name the funniest bit. "
+                      "If nothing meaningful happened, say so in one line. "
+                      "NEVER force sections. NEVER write 'Main Topic', 'What Changed', 'Important Link', "
+                      "'Current Joke/Debate', 'Unanswered Question', 'none currently present', or 'no ongoing "
+                      "joke noted'. Don't call every TikTok/GIF/link important. No raw URLs, no usernames "
+                      "unless needed to explain an update. Sound casual, not like a meeting summary.")
             prompt = f"Recent messages (last {window}, oldest first):\n{joined}"
         try:
             out = await P.llm_complete(system, prompt, max_tokens=380)
@@ -202,12 +208,22 @@ class UtilitiesCog(commands.Cog):
                 "Smart summaries need an AI provider (`UTIL_LLM_API_KEY`) that isn't configured yet."),
                 allowed_mentions=NONE)
             return
-        working = await ctx.reply(embed=_compact("TL;DR", "Reading…"), allowed_mentions=NONE)
+        working = await ctx.reply(embed=_compact("TL;DR", "Reading this…"), allowed_mentions=NONE)
         out = await P.llm_complete(
-            "Summarize the user's content into at most 5 short bullets: main point, "
-            "key claim, why it matters. Be concise and neutral. No preamble.",
-            src[:6000], max_tokens=300)
-        await working.edit(embed=_compact("TL;DR", out or "I couldn't summarize that right now."))
+            "Summarize what the user gives you in AT MOST 3 short bullets — often 1 or 2 is better. "
+            "Sound like a friend who actually read it and is telling you the point in 5 seconds. "
+            "Be specific to THIS content. NEVER use vague filler like 'relatable experience', "
+            "'chaotic nature', 'fostering community', 'why it matters', 'main point', or 'key claim'. "
+            "If you only have a title/caption (no transcript), START with 'Based on the caption,' and "
+            "don't pretend you watched it. If there's not enough to summarize, reply with exactly: "
+            "I found the post, but I couldn't access enough audio or text to summarize it accurately. "
+            "No preamble, no labels, no URLs.",
+            src[:6000], max_tokens=220)
+        if not out:
+            await working.edit(embed=_compact("TL;DR",
+                "I couldn't summarize that right now.", WARN))
+            return
+        await working.edit(embed=_compact("TL;DR", out))
 
     async def _gather_source_text(self, ctx, text):
         if text:
@@ -365,20 +381,30 @@ class UtilitiesCog(commands.Cog):
             png = await P.static_map_png(spot["lat"], spot["lon"], zoom)
         except Exception:
             png = None
-        link = f"https://www.openstreetmap.org/?mlat={spot['lat']}&mlon={spot['lon']}#map={zoom}/{spot['lat']}/{spot['lon']}"
-        name = spot["display_name"].split(",")[0]
+
+        # build a clean info card: name + located-in + coords + requester
+        parts = [p.strip() for p in spot["display_name"].split(",")]
+        name = parts[0]
+        located_in = ", ".join(parts[1:4]) if len(parts) > 1 else None
+        lat = f"{spot['lat']:.4f}"
+        lon = f"{spot['lon']:.4f}"
+        body = f"**{name}**"
+        if located_in:
+            body += f"\nLocated in: {located_in}"
+        body += f"\nCoordinates: {lat}, {lon}"
+        body += f"\nRequested by: {ctx.author.display_name}"
+
         if png:
             import io as _io
             try:
                 await working.delete()
             except Exception:
                 pass
-            await ctx.send(
-                embed=_compact("", f"📍 **{name}**\n[Open in Maps]({link})"),
-                file=discord.File(_io.BytesIO(png), filename="map.png"),
-                allowed_mentions=NONE)
+            await ctx.send(embed=_compact("", body),
+                           file=discord.File(_io.BytesIO(png), filename="map.png"),
+                           allowed_mentions=NONE)
         else:
-            await working.edit(embed=_compact("Map", f"📍 **{name}**\n[Open in Maps]({link})"))
+            await working.edit(embed=_compact("Map", body))
 
     # ------------------------------------------------------------------ #
     # !weather
@@ -498,6 +524,7 @@ class UtilitiesCog(commands.Cog):
     @commands.command(name="caption")
     @commands.guild_only()
     async def caption(self, ctx: commands.Context, *, text: str = None):
+        # base cooldown check (image rate); GIF gets a longer arm below
         try:
             manager.check_cooldown("caption", ctx.author.id, 30)
         except CooldownError as e:
@@ -514,33 +541,53 @@ class UtilitiesCog(commands.Cog):
                 "You must **reply directly to an image or GIF** to caption it.", WARN),
                 allowed_mentions=NONE)
             return
-        img = await self._fetch_replied_image(ctx)
+        img, animated = await self._fetch_replied_image(ctx)
         if img is None:
             await ctx.reply(embed=_compact("Caption",
                 "I couldn't find an image or GIF on that message. Reply directly to one.", WARN),
                 allowed_mentions=NONE)
             return
-        manager.arm_cooldown("caption", ctx.author.id, 30)
+
+        working = await ctx.reply(embed=_compact("Caption", "Working…"), allowed_mentions=NONE)
         with manager.temp_files():
-            buf = cards.caption_image(img, text)
-            await ctx.reply(file=discord.File(buf, filename="caption.png"), allowed_mentions=NONE)
+            try:
+                if animated:
+                    manager.arm_cooldown("caption", ctx.author.id, 120)  # GIF: 2 min
+                    buf, kept = cards.caption_gif(img, text)
+                    fname = "caption.gif" if kept else "caption.png"
+                    note = None if kept else "Caption made from the first frame because the GIF was too large to render safely."
+                    await working.delete()
+                    await ctx.reply(
+                        content=note if note else None,
+                        file=discord.File(buf, filename=fname), allowed_mentions=NONE)
+                else:
+                    manager.arm_cooldown("caption", ctx.author.id, 30)
+                    buf = cards.caption_image(img.convert("RGBA"), text)
+                    await working.delete()
+                    await ctx.reply(file=discord.File(buf, filename="caption.png"), allowed_mentions=NONE)
+            except Exception as ex:
+                print(f"[Ignio][Caption] render failed: {type(ex).__name__}: {ex}")
+                try:
+                    await working.edit(embed=_compact("Caption", "I couldn't make that caption right now.", WARN))
+                except Exception:
+                    pass
 
     async def _fetch_replied_image(self, ctx):
-        """Find an image/GIF on the replied message. Reads attachments directly
-        (most reliable), then falls back to embed/URL fetching. Returns a PIL
-        Image (first frame for GIFs) or None."""
+        """Find an image/GIF on the replied message and return (PIL.Image, is_animated).
+        Handles: image/gif attachments, Tenor links + embeds, GIF-picker embeds,
+        and direct image URLs. Returns (None, False) if nothing usable."""
         ref = ctx.message.reference
         if not ref:
-            return None
+            return None, False
         try:
             t = await ctx.channel.fetch_message(ref.message_id)
         except Exception as ex:
             print(f"[Ignio][Caption] couldn't fetch replied message: {type(ex).__name__}")
-            return None
+            return None, False
 
         from PIL import Image
 
-        # 1) attachments — read bytes directly via discord (no URL re-fetch)
+        # 1) attachments — read bytes directly via discord (most reliable)
         for att in t.attachments:
             ct = (att.content_type or "").lower()
             fn = (att.filename or "").lower()
@@ -548,47 +595,57 @@ class UtilitiesCog(commands.Cog):
                 try:
                     data = await att.read()
                     im = Image.open(io.BytesIO(data))
-                    try:
-                        im.seek(0)
-                    except Exception:
-                        pass
-                    return im.convert("RGBA")
+                    animated = getattr(im, "is_animated", False)
+                    return im, animated
                 except Exception as ex:
                     print(f"[Ignio][Caption] attachment read failed: {type(ex).__name__}")
                     continue
 
-        # 2) URL candidates from embeds + message text (GIF-picker, links)
+        # 2) collect candidate URLs from text + embeds, resolving Tenor pages
         candidates: list[str] = []
+
+        # any tenor.com/view link in the message text
+        for u in resolver.extract_urls(t.content or ""):
+            if P.is_tenor_url(u):
+                tn = await P.resolve_tenor(u)
+                if tn and tn.get("gif"):
+                    candidates.append(tn["gif"])
+            else:
+                base = u.lower().split("?")[0]
+                if base.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                    candidates.append(u)
+
+        # embeds: Tenor/GIF-picker embeds + image/thumbnail/video fields
         for emb in t.embeds:
-            for obj_attr in ("image", "thumbnail"):
+            emb_url = getattr(emb, "url", None)
+            if emb_url and P.is_tenor_url(emb_url):
+                tn = await P.resolve_tenor(emb_url)
+                if tn and tn.get("gif"):
+                    candidates.append(tn["gif"])
+            # gifv/video embeds: the image/thumbnail is usually the .gif still or anim
+            for obj_attr in ("image", "thumbnail", "video"):
                 obj = getattr(emb, obj_attr, None)
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
-            vid = getattr(emb, "video", None)
-            if vid and getattr(vid, "url", None):
-                candidates.append(vid.url)
-        for u in resolver.extract_urls(t.content or ""):
-            base = u.lower().split("?")[0]
-            if base.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
-                candidates.append(u)
 
+        # 3) try each candidate; only keep what PIL can actually open as an image
         for url in candidates:
             data = await self._download_image_bytes(url)
             if not data:
                 continue
             try:
                 im = Image.open(io.BytesIO(data))
-                try:
-                    im.seek(0)
-                except Exception:
-                    pass
-                return im.convert("RGBA")
+                im.load()  # force-decode so we know it's valid
+                animated = getattr(im, "is_animated", False)
+                im2 = Image.open(io.BytesIO(data))  # fresh handle (load consumed frames)
+                return im2, animated
             except Exception:
                 continue
+
         if not candidates and not t.attachments:
-            print("[Ignio][Caption] replied message had no image attachment, embed, or image URL")
-        return None
+            print("[Ignio][Caption] replied message had no image/GIF attachment, Tenor link, or embed")
+        return None, False
 
     async def _download_image_bytes(self, url: str) -> bytes | None:
         """Safely download an image URL (size-capped, SSRF-guarded)."""
@@ -663,8 +720,8 @@ class UtilitiesCog(commands.Cog):
                 "INSERT INTO afk_status(guild_id,user_id,reason,since_ts) VALUES(?,?,?,?) "
                 "ON CONFLICT(guild_id,user_id) DO UPDATE SET reason=excluded.reason, since_ts=excluded.since_ts",
                 (ctx.guild.id, ctx.author.id, reason, int(time.time())))
-        await ctx.reply(embed=_compact("AFK set",
-            (f"You're now AFK: {reason}" if reason else "You're now AFK."),
+        await ctx.reply(embed=_compact("💤 You're AFK",
+            (reason if reason else "I'll let people know you're away."),
             ACCENT), allowed_mentions=NONE)
 
     # ------------------------------------------------------------------ #
@@ -761,7 +818,6 @@ class UtilitiesCog(commands.Cog):
         res = await media.download(url)
         try:
             if res.ok and res.path:
-                # check Discord guild upload limit
                 limit_mb = self._guild_upload_limit_mb(message.guild)
                 import os as _os
                 size_mb = _os.path.getsize(res.path) / (1024 * 1024)
@@ -770,14 +826,32 @@ class UtilitiesCog(commands.Cog):
                         f"This video is too large to upload here. Discord allows up to "
                         f"{limit_mb:.0f} MB in this server."), allowed_mentions=NONE)
                     return
+                # compact Katana-style source card under the video
                 src = res.source or "the web"
-                e = _compact("", f"**Downloaded from {src}**\nRequested by {message.author.mention}")
+                bits = [f"**Downloaded from {src}**"]
+                meta = []
+                if res.uploader:
+                    u = res.uploader if str(res.uploader).startswith("@") else f"@{res.uploader}"
+                    meta.append(u)
+                if res.duration:
+                    m, s = divmod(int(res.duration), 60)
+                    meta.append(f"{m}:{s:02d}")
+                if meta:
+                    bits.append(" · ".join(meta))
+                bits.append(f"Requested by {message.author.display_name}")
+                if res.url:
+                    bits.append(f"[Original post]({res.url})")
+                e = _compact("", "\n".join(bits))
                 fname = "video" + _os.path.splitext(res.path)[1]
                 await message.reply(embed=e, file=discord.File(res.path, filename=fname),
                                     allowed_mentions=NONE)
             else:
-                await message.reply(embed=_compact("Download", _media_error(res.error)),
-                                    allowed_mentions=NONE)
+                # on failure, still show a compact card if we at least know the source
+                body = _media_error(res.error)
+                src = media._source_name(url)
+                if src != "the web":
+                    body += f"\nSource: {src} · [Original post]({url})"
+                await message.reply(embed=_compact("Download", body), allowed_mentions=NONE)
         finally:
             media.cleanup(res.path)
 
@@ -810,7 +884,7 @@ class UtilitiesCog(commands.Cog):
                                  (message.guild.id, message.author.id))
                 try:
                     await message.channel.send(
-                        embed=_compact("Welcome back", f"{message.author.display_name}, AFK cleared.", ACCENT),
+                        embed=_compact("👋 Welcome back", f"{message.author.display_name}, I cleared your AFK.", ACCENT),
                         allowed_mentions=NONE, delete_after=8)
                 except Exception:
                     pass
@@ -832,7 +906,8 @@ class UtilitiesCog(commands.Cog):
                 ago = _ago(int(now) - since)
                 rsn = arow["reason"] or "AFK"
                 await message.channel.send(
-                    embed=_compact(f"{user.display_name} is AFK", f"{rsn} · since {ago}"),
+                    embed=_compact(f"💤 {user.display_name} is away",
+                                   f"{rsn}\nAway for {ago.replace(' ago', '')}"),
                     allowed_mentions=NONE)
         except Exception:
             pass
@@ -840,12 +915,15 @@ class UtilitiesCog(commands.Cog):
 
 def _ago(secs: int) -> str:
     if secs < 60:
-        return "just now"
+        return "less than a minute ago"
     if secs < 3600:
-        return f"{secs // 60}m ago"
+        m = secs // 60
+        return f"{m} minute{'s' if m != 1 else ''} ago"
     if secs < 86400:
-        return f"{secs // 3600}h ago"
-    return f"{secs // 86400}d ago"
+        h = secs // 3600
+        return f"{h} hour{'s' if h != 1 else ''} ago"
+    d = secs // 86400
+    return f"{d} day{'s' if d != 1 else ''} ago"
 
 
 def _media_error(code: str) -> str:
@@ -854,6 +932,7 @@ def _media_error(code: str) -> str:
         "private": "That content is private, login-only, deleted, or unavailable.",
         "timeout": "That download took too long. Try a shorter video or another link.",
         "too_large": "This video is too large to upload here.",
+        "temporarily_blocked": "I could not access a downloadable public video from that post right now.",
         "ffmpeg": "I couldn't process that video right now. An admin can check the bot logs.",
         "failed": "I could not download that video right now. An admin can check the bot logs.",
     }.get(code or "failed", "I could not download that video right now. An admin can check the bot logs.")

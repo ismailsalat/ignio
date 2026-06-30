@@ -108,6 +108,7 @@ def test_url_priority():
 
 def test_error_messages():
     from core.utilities.cog import _media_error
+    check("blocked error is clean", "downloadable public video" in _media_error("temporarily_blocked").lower())
     check("private error message", "private" in _media_error("private").lower())
     check("timeout error message", "too long" in _media_error("timeout").lower())
     check("unsupported error message", "could not download media" in _media_error("unsupported").lower())

@@ -79,13 +79,17 @@ def looks_supported(url: str) -> bool:
 
 
 class DownloadResult:
-    def __init__(self, ok, path=None, title=None, source=None, error=None, too_large=False):
+    def __init__(self, ok, path=None, title=None, source=None, error=None,
+                 too_large=False, url=None, uploader=None, duration=None):
         self.ok = ok
         self.path = path
         self.title = title
         self.source = source
-        self.error = error          # machine code: unsupported|private|timeout|too_large|ffmpeg|failed
+        self.error = error          # unsupported|private|timeout|too_large|temporarily_blocked|ffmpeg|failed
         self.too_large = too_large
+        self.url = url              # original post URL (for the source card)
+        self.uploader = uploader    # @creator
+        self.duration = duration    # seconds
 
 
 def _source_name(url: str) -> str:
@@ -118,6 +122,8 @@ def _blocking_download(url: str, max_mb: int) -> DownloadResult:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "logtostderr": False,
+        "verbose": False,
         "max_filesize": max_mb * 1024 * 1024,
         "socket_timeout": 20,
         "retries": 1,
@@ -148,14 +154,20 @@ def _blocking_download(url: str, max_mb: int) -> DownloadResult:
             if not path or not os.path.exists(path):
                 return DownloadResult(False, error="failed")
             if os.path.getsize(path) > max_mb * 1024 * 1024:
-                return DownloadResult(False, path=path, error="too_large", too_large=True)
+                return DownloadResult(False, path=path, error="too_large", too_large=True, url=url)
+            uploader = info.get("uploader") or info.get("uploader_id") or info.get("channel")
             return DownloadResult(True, path=path,
-                                  title=info.get("title"), source=_source_name(url))
+                                  title=info.get("title"), source=_source_name(url),
+                                  url=url, uploader=uploader,
+                                  duration=info.get("duration"))
     except Exception as ex:
         msg = str(ex).lower()
+        if any(w in msg for w in ("ip address is blocked", "blocked from accessing",
+                                  "rate-limit", "rate limit", "429", "forbidden", "403")):
+            return DownloadResult(False, error="temporarily_blocked")
         if any(w in msg for w in ("private", "login", "log in", "sign in",
                                   "not available", "members-only", "age", "deleted",
-                                  "unavailable", "removed")):
+                                  "unavailable", "removed", "this post may not")):
             return DownloadResult(False, error="private")
         if "filesize" in msg or "too large" in msg:
             return DownloadResult(False, error="too_large", too_large=True)

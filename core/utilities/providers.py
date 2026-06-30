@@ -135,15 +135,33 @@ async def geocode_osm(place: str):
 
 
 def _zoom_for_type(t: str, bbox=None) -> int:
-    # crude auto-zoom by place type
+    # if we have a bounding box, compute a zoom that frames it
+    if bbox and len(bbox) == 4:
+        try:
+            south, north = float(bbox[0]), float(bbox[1])
+            west, east = float(bbox[2]), float(bbox[3])
+            import math
+            lat_span = abs(north - south)
+            lon_span = abs(east - west)
+            span = max(lat_span, lon_span, 0.0005)
+            # 360 deg at zoom 0 across the world; pick zoom so span ~fills the view
+            z = int(math.log2(360.0 / span)) - 1
+            return max(2, min(15, z))
+        except Exception:
+            pass
+    # fallback by place type
     if t in ("country",):
         return 4
-    if t in ("state", "administrative", "region"):
+    if t in ("state", "administrative", "region", "province"):
         return 6
-    if t in ("city", "town", "county"):
-        return 10
-    if t in ("village", "suburb", "neighbourhood"):
+    if t in ("county", "metropolitan"):
+        return 8
+    if t in ("city", "town"):
+        return 11
+    if t in ("village", "suburb", "neighbourhood", "hamlet"):
         return 13
+    if t in ("road", "house", "building", "address", "shop", "amenity"):
+        return 15
     return 11
 
 
@@ -388,8 +406,51 @@ async def llm_complete(system: str, user: str, max_tokens: int = 400) -> str | N
 
 
 # --------------------------------------------------------------------------- #
-# SONG — AudD (optional key) — needs audio extraction handled by caller
+# TENOR — resolve a tenor.com/view page to its direct GIF/MP4 media URL
 # --------------------------------------------------------------------------- #
+import re as _re
+
+_TENOR_VIEW = _re.compile(r"https?://(?:www\.)?tenor\.com/view/[^\s]+", _re.I)
+
+
+def is_tenor_url(url: str) -> bool:
+    return bool(url) and "tenor.com/view/" in url.lower()
+
+
+async def resolve_tenor(url: str) -> dict | None:
+    """Fetch a Tenor view page and pull the direct media URL from its meta tags.
+    Returns {gif, mp4} (either may be None) or None on failure. No API key."""
+    ok, _ = is_safe_url(url)
+    if not ok:
+        return None
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
+            async with s.get(url, headers=_UA) as r:
+                if r.status != 200:
+                    return None
+                html = await r.text()
+    except Exception:
+        return None
+
+    def _meta(prop):
+        m = _re.search(
+            r'<meta[^>]+(?:property|name)=["\']%s["\'][^>]+content=["\']([^"\']+)["\']' % _re.escape(prop),
+            html, _re.I)
+        if not m:
+            m = _re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']%s["\']' % _re.escape(prop),
+                html, _re.I)
+        return m.group(1) if m else None
+
+    gif = _meta("og:image")
+    mp4 = _meta("og:video") or _meta("og:video:secure_url")
+    # tenor og:image is usually the direct .gif on media.tenor.com
+    if gif and not gif.lower().endswith((".gif", ".png", ".jpg", ".jpeg", ".webp")):
+        # sometimes og:image is a preview; still usable as a still frame
+        pass
+    if not gif and not mp4:
+        return None
+    return {"gif": gif, "mp4": mp4}
 def song_key() -> str | None:
     return os.environ.get("UTIL_SONG_API_KEY") or None
 

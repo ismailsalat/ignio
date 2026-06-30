@@ -83,6 +83,55 @@ def quote_card(display_name: str, text: str, timestamp: str,
     return buf
 
 
+def caption_gif(base: Image.Image, caption: str, max_bytes: int = 8 * 1024 * 1024):
+    """Caption an animated GIF, preserving animation. Returns (BytesIO, is_animated).
+    Falls back to a first-frame still if the GIF is too big/slow to render safely."""
+    cap = (caption or "").strip()
+    n_frames = getattr(base, "n_frames", 1)
+    # safety caps: don't render huge/long GIFs frame-by-frame
+    if n_frames > 120 or (base.size[0] * base.size[1]) > 1_200_000:
+        base.seek(0)
+        return caption_image(base.convert("RGBA"), cap), False
+
+    scratch = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+    W, H = base.size
+    size = max(20, min(46, W // 16))
+    font = f_title(size)
+    lines = _wrap_to_width(scratch, cap[:140], font, W - 40)[:3]
+    line_h = size + 8
+    bar_h = 20 + len(lines) * line_h + 10
+
+    frames = []
+    durations = []
+    try:
+        for i in range(n_frames):
+            base.seek(i)
+            frame = base.convert("RGBA")
+            out = Image.new("RGBA", (W, H + bar_h), (255, 255, 255, 255))
+            out.paste(frame, (0, bar_h))
+            d = ImageDraw.Draw(out)
+            y = 14
+            for ln in lines:
+                lw = _text_w(d, ln, font)
+                d.text(((W - lw) // 2, y), ln, font=font, fill=(15, 15, 18))
+                y += line_h
+            frames.append(out.convert("P", palette=Image.ADAPTIVE))
+            durations.append(base.info.get("duration", 80))
+    except Exception:
+        base.seek(0)
+        return caption_image(base.convert("RGBA"), cap), False
+
+    buf = io.BytesIO()
+    frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
+                   duration=durations, loop=0, disposal=2)
+    if buf.tell() > max_bytes:
+        # too large animated — fall back to first-frame still
+        base.seek(0)
+        return caption_image(base.convert("RGBA"), cap), False
+    buf.seek(0)
+    return buf, True
+
+
 def caption_image(base: Image.Image, caption: str) -> io.BytesIO:
     """Add a top caption bar to an image, auto-wrapped to fit. Returns PNG."""
     base = base.convert("RGBA")

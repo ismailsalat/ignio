@@ -8,12 +8,27 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Media Download"
+CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.1",
+        "date": "2026-06-30",
+        "title": "Utilities Polish",
+        "notes": [
+            "!caption now works on Tenor GIFs + GIF-picker embeds; preserves animation",
+            "  (clean first-frame fallback when a GIF is too large to render safely)",
+            "!map: zoom now matches the place (country/state/city) using the result bounds;",
+            "  cleaner info card (Located in / Coordinates / Requested by), no Open-in-Maps",
+            "Media download: clean message when TikTok blocks the server IP (no crash/spam);",
+            "  success now posts a compact source card with creator + Original post link",
+            "!tldr + !catchup: rewritten prompts — natural, specific, no Main/Key/Why filler",
+            "AFK: cuter, cleaner confirmation + away notice with friendly duration",
+        ],
+    },
     {
         "version": "1.9.0",
         "date": "2026-06-30",
