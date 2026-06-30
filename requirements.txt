@@ -3,3 +3,4 @@ aiosqlite>=0.19
 python-dotenv>=1.0
 PyNaCl
 Pillow>=10.0
+yt-dlp>=2024.1.0

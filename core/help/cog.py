@@ -76,6 +76,11 @@ def category_embed(cat: str, prefix: str, is_admin: bool, is_owner: bool) -> dis
         tag = " 🛡️" if c.get("admin") or c.get("owner") else ""
         lines.append(f"`{prefix}{usage}`{tag} — {c['desc']}")
     e.description = "\n".join(lines)
+    if cat == "utilities":
+        e.add_field(
+            name="📥 Media download",
+            value="**@Ignio** (reply to a video link) — download a public video from supported sites",
+            inline=False)
     if any(c.get("admin") for c in cmds):
         e.set_footer(text="🛡️ = admin only")
     return e

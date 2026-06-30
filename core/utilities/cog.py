@@ -23,6 +23,7 @@ from discord.ext import commands
 from core.utilities.jobs import manager, CooldownError, BusyError
 from core.utilities import resolver, safety, cards
 from core.utilities import providers as P
+from core.utilities import media
 
 NONE = discord.AllowedMentions.none()
 ACCENT = 0x6FB7B0
@@ -525,51 +526,68 @@ class UtilitiesCog(commands.Cog):
             await ctx.reply(file=discord.File(buf, filename="caption.png"), allowed_mentions=NONE)
 
     async def _fetch_replied_image(self, ctx):
-        """Find an image/GIF on the replied message: attachments first, then
-        embeds (image/thumbnail), then any direct image URL. Returns a PIL Image
-        (first frame for GIFs) or None."""
+        """Find an image/GIF on the replied message. Reads attachments directly
+        (most reliable), then falls back to embed/URL fetching. Returns a PIL
+        Image (first frame for GIFs) or None."""
         ref = ctx.message.reference
         if not ref:
             return None
         try:
             t = await ctx.channel.fetch_message(ref.message_id)
-        except Exception:
+        except Exception as ex:
+            print(f"[Ignio][Caption] couldn't fetch replied message: {type(ex).__name__}")
             return None
 
-        candidates: list[str] = []
-        # 1) attachments that are images or gifs
+        from PIL import Image
+
+        # 1) attachments — read bytes directly via discord (no URL re-fetch)
         for att in t.attachments:
             ct = (att.content_type or "").lower()
             fn = (att.filename or "").lower()
             if ct.startswith("image") or fn.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
-                candidates.append(att.url)
-        # 2) embeds: image / thumbnail (Discord GIF-picker GIFs arrive as embeds)
+                try:
+                    data = await att.read()
+                    im = Image.open(io.BytesIO(data))
+                    try:
+                        im.seek(0)
+                    except Exception:
+                        pass
+                    return im.convert("RGBA")
+                except Exception as ex:
+                    print(f"[Ignio][Caption] attachment read failed: {type(ex).__name__}")
+                    continue
+
+        # 2) URL candidates from embeds + message text (GIF-picker, links)
+        candidates: list[str] = []
         for emb in t.embeds:
             for obj_attr in ("image", "thumbnail"):
                 obj = getattr(emb, obj_attr, None)
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
-            # some GIF embeds put the gif in video.url / .proxy_url
             vid = getattr(emb, "video", None)
             if vid and getattr(vid, "url", None):
                 candidates.append(vid.url)
-        # 3) any direct image URL in the message text
         for u in resolver.extract_urls(t.content or ""):
-            if u.lower().split("?")[0].endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            base = u.lower().split("?")[0]
+            if base.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
                 candidates.append(u)
 
-        from PIL import Image
         for url in candidates:
             data = await self._download_image_bytes(url)
             if not data:
                 continue
             try:
                 im = Image.open(io.BytesIO(data))
-                im.seek(0)  # first frame for animated GIFs
+                try:
+                    im.seek(0)
+                except Exception:
+                    pass
                 return im.convert("RGBA")
             except Exception:
                 continue
+        if not candidates and not t.attachments:
+            print("[Ignio][Caption] replied message had no image attachment, embed, or image URL")
         return None
 
     async def _download_image_bytes(self, url: str) -> bytes | None:
@@ -649,6 +667,134 @@ class UtilitiesCog(commands.Cog):
             (f"You're now AFK: {reason}" if reason else "You're now AFK."),
             ACCENT), allowed_mentions=NONE)
 
+    # ------------------------------------------------------------------ #
+    # mention-to-download:  @Ignio (reply to a video link)  /  @Ignio <link>
+    # ------------------------------------------------------------------ #
+    @commands.Cog.listener("on_message")
+    async def media_mention_listener(self, message: discord.Message):
+        # only real users, only when the bot is explicitly @mentioned
+        if not message.guild or message.author.bot:
+            return
+        if self.bot.user is None or self.bot.user not in message.mentions:
+            return
+        # @everyone/@here shouldn't count as a mention of us
+        if message.mention_everyone:
+            return
+        if not media.ENABLED():
+            return
+        # category gate (so admins can disable utilities entirely)
+        if self.repo is not None and not await self._enabled(message.guild.id):
+            return
+
+        # find a URL by priority: replied message -> this message -> embeds
+        url = await self._find_media_url(message)
+        if not url:
+            # only nudge if they actually just pinged us with nothing usable
+            await message.reply(embed=_compact("Download",
+                "Reply to a message with a supported public video link, then mention me.", WARN),
+                allowed_mentions=NONE)
+            return
+
+        if not media.looks_supported(url):
+            await message.reply(embed=_compact("Download", "I could not download media from that link.", WARN),
+                                allowed_mentions=NONE)
+            return
+        if not media.is_available():
+            print("[Ignio][Media] yt-dlp is not installed — run: pip install yt-dlp")
+            await message.reply(embed=_compact("Download",
+                "Media downloading isn't set up on this bot yet. An admin can check the logs.", WARN),
+                allowed_mentions=NONE)
+            return
+
+        # per-user cooldown
+        try:
+            manager.check_cooldown("media", message.author.id, media.USER_COOLDOWN())
+        except CooldownError as e:
+            await message.reply(embed=_compact("Slow down",
+                f"Give it {e.retry_after:.0f}s before the next download.", WARN), allowed_mentions=NONE)
+            return
+
+        loading = None
+        try:
+            # one active download per user + per-guild concurrency cap
+            async with manager.slot("media:user", message.author.id, 1):
+                async with manager.slot("media", message.guild.id, media.MAX_CONCURRENT()):
+                    manager.arm_cooldown("media", message.author.id, media.USER_COOLDOWN())
+                    try:
+                        await message.add_reaction("⏳")
+                        loading = True
+                    except Exception:
+                        loading = False
+                    await self._do_media_download(message, url)
+        except BusyError:
+            await message.reply(embed=_compact("Busy",
+                "I'm downloading other videos right now — try again in a moment.", WARN),
+                allowed_mentions=NONE)
+        finally:
+            if loading:
+                try:
+                    await message.remove_reaction("⏳", self.bot.user)
+                except Exception:
+                    pass
+
+    async def _find_media_url(self, message) -> str | None:
+        # 1) replied-to message
+        if message.reference:
+            try:
+                t = await message.channel.fetch_message(message.reference.message_id)
+                u = resolver.first_video_target(t)
+                if not u:
+                    urls = resolver.resolve_targets(t)["urls"]
+                    u = next((x for x in urls if media.looks_supported(x)), None)
+                if u:
+                    return u
+            except Exception:
+                pass
+        # 2) the mention message itself (strip the bot mention text first)
+        urls = resolver.extract_urls(message.content or "")
+        u = next((x for x in urls if media.looks_supported(x)), None)
+        if u:
+            return u
+        return None
+
+    async def _do_media_download(self, message, url: str):
+        res = await media.download(url)
+        try:
+            if res.ok and res.path:
+                # check Discord guild upload limit
+                limit_mb = self._guild_upload_limit_mb(message.guild)
+                import os as _os
+                size_mb = _os.path.getsize(res.path) / (1024 * 1024)
+                if size_mb > limit_mb:
+                    await message.reply(embed=_compact("Download",
+                        f"This video is too large to upload here. Discord allows up to "
+                        f"{limit_mb:.0f} MB in this server."), allowed_mentions=NONE)
+                    return
+                src = res.source or "the web"
+                e = _compact("", f"**Downloaded from {src}**\nRequested by {message.author.mention}")
+                fname = "video" + _os.path.splitext(res.path)[1]
+                await message.reply(embed=e, file=discord.File(res.path, filename=fname),
+                                    allowed_mentions=NONE)
+            else:
+                await message.reply(embed=_compact("Download", _media_error(res.error)),
+                                    allowed_mentions=NONE)
+        finally:
+            media.cleanup(res.path)
+
+    @staticmethod
+    def _guild_upload_limit_mb(guild) -> float:
+        # Discord boost tiers: 10MB (none/1), 50MB (tier 2), 100MB (tier 3)
+        tier = getattr(guild, "premium_tier", 0) or 0
+        if tier >= 3:
+            return 100.0
+        if tier >= 2:
+            return 50.0
+        # discord.py exposes filesize_limit on the guild in bytes when available
+        raw = getattr(guild, "filesize_limit", None)
+        if raw:
+            return raw / (1024 * 1024)
+        return 10.0
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not message.guild or message.author.bot or self.repo is None:
@@ -700,6 +846,17 @@ def _ago(secs: int) -> str:
     if secs < 86400:
         return f"{secs // 3600}h ago"
     return f"{secs // 86400}d ago"
+
+
+def _media_error(code: str) -> str:
+    return {
+        "unsupported": "I could not download media from that link.",
+        "private": "That content is private, login-only, deleted, or unavailable.",
+        "timeout": "That download took too long. Try a shorter video or another link.",
+        "too_large": "This video is too large to upload here.",
+        "ffmpeg": "I couldn't process that video right now. An admin can check the bot logs.",
+        "failed": "I could not download that video right now. An admin can check the bot logs.",
+    }.get(code or "failed", "I could not download that video right now. An admin can check the bot logs.")
 
 
 async def setup(bot):  # pragma: no cover

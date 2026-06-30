@@ -8,12 +8,26 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.8.3"
+VERSION = "1.9.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Utilities Update"
+CODENAME = "Media Download"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.0",
+        "date": "2026-06-30",
+        "title": "Media Download",
+        "notes": [
+            "NEW @Ignio (reply to a video link) downloads the public video as an attachment",
+            "Works for TikTok, Instagram, X/Twitter, Reddit, YouTube, Facebook, Streamable, direct mp4",
+            "Only runs on an explicit @mention; never auto-downloads links",
+            "yt-dlp powered; public media only (no logins/cookies/private/DRM/age-gated)",
+            "Per-user cooldown + 1 active/user + guild concurrency cap; temp files always deleted",
+            "SSRF-guarded; URLs redacted in logs; respects the Discord upload-size limit",
+            "Also fixed: !caption now reads GIFs/attachments directly; clearer media errors",
+        ],
+    },
     {
         "version": "1.8.3",
         "date": "2026-06-29",
