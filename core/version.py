@@ -8,12 +8,22 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.2"
+VERSION = "1.9.3"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.3",
+        "date": "2026-06-30",
+        "title": "Caption fix",
+        "notes": [
+            "!caption now ONLY uses the message you replied to (no channel scanning)",
+            "Fixes captioning the wrong image and stacking captions on bot output",
+            "More robust attachment detection (width/height) + clear debug logging",
+        ],
+    },
     {
         "version": "1.9.2",
         "date": "2026-06-30",

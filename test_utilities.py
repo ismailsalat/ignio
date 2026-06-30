@@ -301,6 +301,36 @@ def test_quote_twitter():
     check("quote handles long text", buf2.read()[:8].startswith(b"\x89PNG"))
 
 
+
+
+async def test_caption_only_replied():
+    """Caption must use ONLY the replied message, never scan the channel."""
+    import io as _io
+    from PIL import Image
+    from core.utilities.cog import UtilitiesCog
+    import discord
+    from discord.ext import commands
+    bot = commands.Bot(command_prefix="!!", intents=discord.Intents.all())
+    cog = UtilitiesCog(bot, None, None)
+
+    # a message with a real image attachment
+    frames = Image.new("RGB", (100, 100), (200, 80, 90))
+    b = _io.BytesIO(); frames.save(b, format="PNG"); data = b.getvalue()
+    class Att:
+        content_type = "image/png"; filename = "x.png"; width = 100; height = 100
+        async def read(self): return data
+    class MsgWith:
+        attachments = [Att()]; embeds = []; content = ""
+    class MsgWithout:
+        attachments = []; embeds = []; content = "just text"
+
+    img, anim = await cog._image_from_message(MsgWith())
+    ok_found = img is not None
+    img2, _ = await cog._image_from_message(MsgWithout())
+    ok_none = img2 is None  # no image -> None, does NOT hunt elsewhere
+    return ok_found and ok_none
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -312,6 +342,7 @@ def _extra_main():
     test_media_blocked()
     test_afk_text()
     test_quote_twitter()
+    check("caption uses only the replied message", asyncio.run(test_caption_only_replied()))
 
 
 if __name__ == "__main__":

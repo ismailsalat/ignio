@@ -612,36 +612,30 @@ class UtilitiesCog(commands.Cog):
 
         n_att = len(getattr(t, "attachments", []))
         n_emb = len(getattr(t, "embeds", []))
-        print(f"[Ignio][Caption] replied msg has {n_att} attachment(s), {n_emb} embed(s)")
+        print(f"[Ignio][Caption] replied msg {t.id} has {n_att} attachment(s), {n_emb} embed(s)")
 
+        # ONLY use the message the user explicitly replied to — never hunt for
+        # other images in the channel (that captions the wrong thing).
         result = await self._image_from_message(t)
-        if result[0] is not None:
-            return result
-
-        # last resort: the user may have replied to a wrapper; scan a couple of
-        # nearby recent messages for an image/GIF from the same author
-        try:
-            async for m in ctx.channel.history(limit=6, before=ctx.message):
-                if m.id == t.id:
-                    continue
-                r = await self._image_from_message(m)
-                if r[0] is not None:
-                    print("[Ignio][Caption] found image on a nearby message")
-                    return r
-        except Exception:
-            pass
-        print("[Ignio][Caption] no usable image/GIF found")
-        return None, False
+        if result[0] is None:
+            print("[Ignio][Caption] no usable image/GIF on the replied message")
+        return result
 
     async def _image_from_message(self, t):
-        """Extract a PIL image (+animated flag) from one message, or (None, False)."""
+        """Extract a PIL image (+animated flag) from one message, or (None, False).
+        Only ever called on the message the user explicitly replied to."""
         from PIL import Image
 
         # 1) attachments — read bytes directly via discord (most reliable)
         for att in getattr(t, "attachments", []):
             ct = (getattr(att, "content_type", None) or "").lower()
             fn = (getattr(att, "filename", "") or "").lower()
-            if ct.startswith("image") or fn.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            has_dims = bool(getattr(att, "width", None) and getattr(att, "height", None))
+            is_img = (ct.startswith("image")
+                      or fn.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+                      or has_dims)  # Discord sets width/height on all images
+            print(f"[Ignio][Caption] attachment: name={fn!r} type={ct!r} dims={has_dims} -> image={is_img}")
+            if is_img:
                 try:
                     data = await att.read()
                     im = Image.open(io.BytesIO(data))
