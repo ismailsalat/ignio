@@ -24,7 +24,7 @@ HEART = (235, 84, 110)
 HEART_SOFT = (245, 140, 165)
 GOLD = (240, 177, 50)
 
-W, H = 720, 420
+W, H = 720, 480
 
 
 def ship_score(a_id: int, b_id: int) -> int:
@@ -61,11 +61,11 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
 
     # title
     title = "Sob-Ship"
-    d.text((W // 2 - _text_w(d, title, f_title(40)) // 2, 26), title, font=f_title(40), fill=INK)
+    d.text((W // 2 - _text_w(d, title, f_title(40)) // 2, 24), title, font=f_title(40), fill=INK)
 
-    # the two names — robust against very long Discord display names (up to 32
-    # chars each) and very short ones. Each name is independently truncated to a
-    # pixel budget, and the font shrinks a step if the pair still won't fit.
+    # --- two name chips, side by side, with a heart-divider between them ---
+    # Each name lives in its own rounded chip so long names never collide with
+    # the heart or each other. Names are truncated to the chip width.
     na = clean_name(name_a) or "someone"
     nb = clean_name(name_b) or "someone"
 
@@ -77,33 +77,35 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
             text = text[:-1]
         return (text + ell) if text else ell
 
-    sep = "  ×  "
-    avail = W - 64                       # total horizontal budget for the line
-    chosen_font = None
-    fa = fb = na2 = nb2 = None
-    for size in (24, 22, 20, 18):
-        f = f_reg(size)
-        sep_w = _text_w(d, sep, f)
-        per = (avail - sep_w) / 2         # equal pixel budget per name
-        a_fit = _truncate(d, na, f, per)
-        b_fit = _truncate(d, nb, f, per)
-        if _text_w(d, a_fit + sep + b_fit, f) <= avail:
-            chosen_font, na2, nb2 = f, a_fit, b_fit
+    chip_y, chip_h = 84, 46
+    gap = 54                      # space in the middle for the × divider
+    chip_w = (W - 2 * 40 - gap) // 2
+    pad_in = 16
+    # pick a font size that fits the longer name into a chip
+    name_font = f_reg(22)
+    for size in (22, 20, 18, 17):
+        name_font = f_reg(size)
+        if (_text_w(d, na, name_font) <= chip_w - 2 * pad_in or len(na) <= 4) and \
+           (_text_w(d, nb, name_font) <= chip_w - 2 * pad_in or len(nb) <= 4):
             break
-    if chosen_font is None:               # absolute fallback
-        chosen_font = f_reg(18)
-        na2 = _truncate(d, na, chosen_font, (avail - _text_w(d, sep, chosen_font)) / 2)
-        nb2 = _truncate(d, nb, chosen_font, (avail - _text_w(d, sep, chosen_font)) / 2)
+    na_fit = _truncate(d, na, name_font, chip_w - 2 * pad_in)
+    nb_fit = _truncate(d, nb, name_font, chip_w - 2 * pad_in)
 
-    pair = na2 + sep + nb2
-    d.text((W // 2 - _text_w(d, pair, chosen_font) // 2, 80), pair, font=chosen_font, fill=DIM)
+    lx = 40
+    rx = W - 40 - chip_w
+    for cx0, txt in ((lx, na_fit), (rx, nb_fit)):
+        d.rounded_rectangle([cx0, chip_y, cx0 + chip_w, chip_y + chip_h], radius=14, fill=PANEL)
+        tw = _text_w(d, txt, name_font)
+        ty = chip_y + (chip_h - name_font.size) // 2 - 2
+        d.text((cx0 + (chip_w - tw) // 2, ty), txt, font=name_font, fill=INK)
+    # small heart divider between the chips
+    div = _heart_points(W // 2, chip_y + chip_h // 2, 18)
+    d.polygon(div, fill=HEART)
 
-    # big heart that fills bottom-up
-    cx, cy, size = W // 2, 215, 150
+    # big heart that fills bottom-up — lowered so it never touches the chips
+    cx, cy, size = W // 2, 290, 135
     pts = _heart_points(cx, cy, size)
-    # outline heart (empty)
     d.polygon(pts, outline=HEART_SOFT, width=3)
-    # filled portion: clip a filled heart to a rising rectangle
     ys = [p[1] for p in pts]
     top, bot = min(ys), max(ys)
     fill_line = bot - (bot - top) * (fill_pct / 100.0)
@@ -112,10 +114,8 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
     fill_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     fd = ImageDraw.Draw(fill_layer)
     fd.rectangle([0, fill_line, W, bot + 5], fill=HEART + (255,))
-    # keep only the part of the rectangle inside the heart
     fill_layer.putalpha(Image.composite(fill_layer.getchannel("A"), Image.new("L", (W, H), 0), heart_mask))
     img.alpha_composite(fill_layer)
-    # heart outline on top so it stays crisp
     d.polygon(pts, outline=HEART, width=3)
 
     # percentage in the heart
@@ -123,12 +123,14 @@ def _frame(name_a, name_b, fill_pct, final_score, show_score):
     d.text((cx - _text_w(d, pct_txt, f_num(46)) // 2, cy - 28), pct_txt, font=f_num(46),
            fill=(255, 255, 255))
 
-    # verdict (only once filled)
+    # verdict (only once filled) — sits in a band at the very bottom
     if show_score:
         verdict, vcol = _verdict(final_score)
         vt = f_label(22)
-        d.rounded_rectangle([W // 2 - 200, 350, W // 2 + 200, 396], radius=18, fill=PANEL)
-        d.text((W // 2 - _text_w(d, verdict, vt) // 2, 360), verdict, font=vt, fill=vcol)
+        vw = _text_w(d, verdict, vt)
+        bw = max(220, vw + 60)
+        d.rounded_rectangle([W // 2 - bw // 2, 424, W // 2 + bw // 2, 466], radius=18, fill=PANEL)
+        d.text((W // 2 - vw // 2, 434), verdict, font=vt, fill=vcol)
 
     img.putalpha(_round_mask((W, H), 28))
     return img
