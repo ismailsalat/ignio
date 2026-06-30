@@ -158,7 +158,7 @@ def for_category(cat: str, *, is_admin: bool = False, is_owner: bool = False) ->
 
 
 def visible_categories(is_admin: bool = False) -> list[str]:
-    cats = ["sobs", "profile", "shop", "games", "economy", "info"]
+    cats = ["sobs", "profile", "shop", "games", "utilities", "economy", "info"]
     if is_admin:
         cats.append("admin")
     return cats

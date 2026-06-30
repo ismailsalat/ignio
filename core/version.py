@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Update"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.7.2",
+        "date": "2026-06-29",
+        "title": "Utilities in help fix",
+        "notes": [
+            "Fixed: the Utilities category now shows in !help and the help menu buttons",
+            "The menu had a hardcoded list that forgot the new category",
+            "!admin utilities on/off disables the whole category (verified)",
+            "Added a test so a category can never silently go missing from help again",
+        ],
+    },
     {
         "version": "1.7.1",
         "date": "2026-06-29",

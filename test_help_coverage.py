@@ -43,6 +43,17 @@ def main():
         emb = H.category_embed(cat, "!", is_admin=False, is_owner=False)
         assert (emb.description and len(emb.description) <= 4096) or emb.fields, f"{cat} empty"
     print("  ✅ every category renders for normal users")
+
+    # every category that has commands MUST appear in the help menu (this catches
+    # the bug where a new category exists in the registry but the menu's hardcoded
+    # list forgot it, so users never see it)
+    import core.commands_registry as _R
+    cats_with_cmds = {c["cat"] for c in _R.COMMANDS}
+    menu = set(_R.visible_categories(is_admin=True))
+    missing_from_menu = cats_with_cmds - menu - {"economy"}  # economy is folded into sobs view
+    assert not missing_from_menu, f"categories missing from help menu: {missing_from_menu}"
+    print("  \u2705 every category with commands appears in the help menu")
+
     print("  RESULT: help coverage PASSED")
 
 if __name__ == "__main__":
