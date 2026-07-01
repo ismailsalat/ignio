@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.5"
+VERSION = "1.9.6"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.6",
+        "date": "2026-06-30",
+        "title": "Tenor caption via ffmpeg",
+        "notes": [
+            "!caption on Tenor GIFs now works even when Tenor serves a format PIL",
+            "  cannot read: it downloads the mp4 Tenor always provides and converts",
+            "  it to a GIF with ffmpeg, then captions that",
+            "Added per-candidate logging so any remaining case is fully diagnosable",
+        ],
+    },
     {
         "version": "1.9.5",
         "date": "2026-06-30",

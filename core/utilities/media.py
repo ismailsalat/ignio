@@ -209,3 +209,53 @@ def cleanup(path: str | None):
             os.remove(path)
     except Exception:
         pass
+
+
+async def video_url_to_gif_bytes(url: str, max_seconds: int = 8) -> bytes | None:
+    """Download a short public video URL (e.g. a Tenor .mp4) and convert it to a
+    GIF with ffmpeg. Returns GIF bytes, or None. Used as a caption fallback when
+    the image URL isn't a PIL-openable format."""
+    if not ffmpeg_available():
+        return None
+    from core.utilities.safety import is_safe_url
+    ok, _ = is_safe_url(url)
+    if not ok:
+        return None
+    import asyncio as _asyncio
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    src = os.path.join(TEMP_DIR, f"tsrc_{abs(hash(url)) % 10**8}")
+    dst = src + ".gif"
+    try:
+        # download the video bytes (cap ~20MB)
+        import aiohttp
+        ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(url, headers={"User-Agent": ua}) as r:
+                if r.status != 200:
+                    return None
+                data = await r.content.read(20 * 1024 * 1024 + 1)
+                if not data or len(data) > 20 * 1024 * 1024:
+                    return None
+        with open(src, "wb") as f:
+            f.write(data)
+        # ffmpeg: first N seconds, scale to <=400px wide, 12fps, palette for clean gif
+        vf = f"fps=12,scale=400:-1:flags=lanczos"
+        proc = await _asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-t", str(max_seconds), "-i", src,
+            "-vf", vf, "-loop", "0", dst,
+            stdout=_asyncio.subprocess.DEVNULL, stderr=_asyncio.subprocess.DEVNULL)
+        try:
+            await _asyncio.wait_for(proc.communicate(), timeout=25)
+        except _asyncio.TimeoutError:
+            proc.kill()
+            return None
+        if os.path.exists(dst) and os.path.getsize(dst) > 0:
+            with open(dst, "rb") as f:
+                return f.read()
+        return None
+    except Exception:
+        return None
+    finally:
+        cleanup(src)
+        cleanup(dst)

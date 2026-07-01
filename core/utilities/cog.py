@@ -646,6 +646,7 @@ class UtilitiesCog(commands.Cog):
 
         # 2) candidate URLs (Tenor resolved to a real .gif; only image URLs kept)
         candidates: list[str] = []
+        mp4_candidates: list[str] = []
 
         async def _add_tenor(page_url):
             tn = await P.resolve_tenor(page_url)
@@ -655,6 +656,8 @@ class UtilitiesCog(commands.Cog):
                     candidates.append(tn["gif"])
                 if tn.get("gif_direct"):
                     candidates.append(tn["gif_direct"])
+                if tn.get("mp4"):
+                    mp4_candidates.append(tn["mp4"])
 
         # text links
         for u in resolver.extract_urls(getattr(t, "content", "") or ""):
@@ -676,8 +679,11 @@ class UtilitiesCog(commands.Cog):
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
-            # NOTE: we intentionally do NOT add embed.video.url — it's an .mp4
-            # that PIL cannot open. Tenor .gif is handled via the resolver above.
+            # capture the video url as an ffmpeg-convert fallback (not for PIL)
+            vid = getattr(emb, "video", None)
+            vurl = getattr(vid, "url", None) if vid else None
+            if vurl:
+                mp4_candidates.append(vurl)
 
         # try only URLs that look like images; keep order, de-dupe
         seen = set()
@@ -685,6 +691,7 @@ class UtilitiesCog(commands.Cog):
             if url in seen:
                 continue
             seen.add(url)
+            print(f"[Ignio][Caption] trying candidate: {url.split('?')[0]}")
             data = await self._download_image_bytes(url)
             if not data:
                 continue
@@ -696,8 +703,24 @@ class UtilitiesCog(commands.Cog):
                 print(f"[Ignio][Caption] using image candidate ({probe.format})")
                 return im2, getattr(probe, "is_animated", False)
             except Exception as ex:
-                print(f"[Ignio][Caption] candidate not a still/gif ({type(ex).__name__}), trying next")
+                print(f"[Ignio][Caption] candidate not a still/gif ({type(ex).__name__}: "
+                      f"{str(ex)[:80]}), first bytes={data[:8]!r}, trying next")
                 continue
+
+        # last resort: if there's a video (Tenor .mp4 / gifv), convert it to a GIF
+        # with ffmpeg so we can still caption it. Tenor always provides an mp4.
+        for mp4 in mp4_candidates:
+            print(f"[Ignio][Caption] converting video to gif: {mp4.split('?')[0]}")
+            gif_bytes = await media.video_url_to_gif_bytes(mp4)
+            if gif_bytes:
+                try:
+                    probe = Image.open(io.BytesIO(gif_bytes))
+                    probe.load()
+                    im2 = Image.open(io.BytesIO(gif_bytes))
+                    print("[Ignio][Caption] using ffmpeg-converted gif")
+                    return im2, getattr(probe, "is_animated", False)
+                except Exception:
+                    continue
         return None, False
 
     async def _download_image_bytes(self, url: str) -> bytes | None:

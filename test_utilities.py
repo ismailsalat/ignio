@@ -364,6 +364,44 @@ async def test_tenor_embed_caption():
     return img is not None and not any(".mp4" in u for u in tried)
 
 
+
+
+async def test_mp4_fallback_caption():
+    """When no image URL opens, the Tenor mp4 is converted to a GIF via ffmpeg."""
+    import os as _os
+    from unittest.mock import patch
+    from core.utilities.cog import UtilitiesCog
+    from core.utilities import media as _media
+    import discord
+    from discord.ext import commands
+    if not _media.ffmpeg_available():
+        return True  # skip cleanly if ffmpeg absent
+    _os.system("ffmpeg -y -f lavfi -i testsrc=duration=1:size=120x120:rate=8 /tmp/_t.mp4 >/dev/null 2>&1")
+    mp4 = open("/tmp/_t.mp4", "rb").read()
+    class Obj:
+        def __init__(self, u): self.url = u
+    class E:
+        url = "https://tenor.com/view/x-gif-999"; image = None
+        thumbnail = Obj("https://media.tenor.com/a/tenor.webp")
+        video = Obj("https://media.tenor.com/a/tenor.mp4")
+    class M:
+        attachments = []; embeds = [E()]; content = ""
+    bot = commands.Bot(command_prefix="!!", intents=discord.Intents.all())
+    cog = UtilitiesCog(bot, None, None)
+    async def bad_img(url): return b"notimage"
+    async def real_v2g(url, max_seconds=8):
+        import subprocess
+        open("/tmp/_s.mp4", "wb").write(mp4)
+        subprocess.run(["ffmpeg", "-y", "-t", "8", "-i", "/tmp/_s.mp4", "-vf",
+                        "fps=12,scale=400:-1:flags=lanczos", "-loop", "0", "/tmp/_o.gif"],
+                       capture_output=True)
+        return open("/tmp/_o.gif", "rb").read() if _os.path.exists("/tmp/_o.gif") else None
+    with patch.object(cog, "_download_image_bytes", side_effect=bad_img), \
+         patch.object(_media, "video_url_to_gif_bytes", side_effect=real_v2g):
+        img, anim = await cog._image_from_message(M())
+    return img is not None and anim
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -377,6 +415,7 @@ def _extra_main():
     test_quote_twitter()
     check("caption uses only the replied message", asyncio.run(test_caption_only_replied()))
     check("tenor gifv embed resolves to .gif (never mp4)", asyncio.run(test_tenor_embed_caption()))
+    check("mp4 fallback converts to gif via ffmpeg", asyncio.run(test_mp4_fallback_caption()))
 
 
 if __name__ == "__main__":
