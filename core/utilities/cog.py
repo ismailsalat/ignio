@@ -569,9 +569,21 @@ class UtilitiesCog(commands.Cog):
             return
         img, animated = await self._fetch_replied_image(ctx)
         if img is None:
-            await ctx.reply(embed=_compact("Caption",
-                "I couldn't find an image or GIF on that message. Reply directly to one.", WARN),
-                allowed_mentions=NONE)
+            # detect a known stub-only GIF provider (Klipy) to give a useful hint
+            hint = "I couldn't find an image or GIF on that message. Reply directly to one."
+            try:
+                tmsg = ctx.message.reference.resolved
+                if tmsg is None:
+                    tmsg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                for emb in getattr(tmsg, "embeds", []):
+                    if P.is_klipy_url(getattr(emb, "url", "") or ""):
+                        hint = ("That GIF is from **Klipy**, which doesn't share the real file "
+                                "with bots — only a tiny preview. Try a **Tenor** GIF, or "
+                                "**upload the GIF file directly** and reply to it.")
+                        break
+            except Exception:
+                pass
+            await ctx.reply(embed=_compact("Caption", hint, WARN), allowed_mentions=NONE)
             return
 
         working = await ctx.reply(embed=_compact("Caption", "Working…"), allowed_mentions=NONE)

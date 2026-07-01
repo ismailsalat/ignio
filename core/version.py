@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Caption via source page"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.0.1",
+        "date": "2026-06-30",
+        "title": "Caption: graceful Klipy handling",
+        "notes": [
+            "Klipy only serves bots a tiny preview stub (proven: 48/840/8192 bytes for",
+            "  every url incl. Discord proxy) — the real file needs their JS player",
+            "Caption now gives a clear message for Klipy GIFs: use Tenor or upload directly",
+            "Uploaded GIFs, Tenor GIFs, and normal images all caption correctly",
+        ],
+    },
     {
         "version": "2.0.0",
         "date": "2026-06-30",
