@@ -187,7 +187,7 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !tldr
     # ------------------------------------------------------------------ #
-    @commands.command(name="tldr")
+    @commands.command(name="tldr", aliases=["tl"])
     @commands.guild_only()
     async def tldr(self, ctx: commands.Context, *, text: str = None):
         try:
@@ -307,7 +307,7 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !xray
     # ------------------------------------------------------------------ #
-    @commands.command(name="xray")
+    @commands.command(name="xray", aliases=["x"])
     @commands.guild_only()
     async def xray(self, ctx: commands.Context, url: str = None):
         try:
@@ -427,7 +427,7 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !weather
     # ------------------------------------------------------------------ #
-    @commands.command(name="weather")
+    @commands.command(name="weather", aliases=["w"])
     @commands.guild_only()
     async def weather(self, ctx: commands.Context, *, place: str = None):
         try:
@@ -539,7 +539,7 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !caption
     # ------------------------------------------------------------------ #
-    @commands.command(name="caption")
+    @commands.command(name="caption", aliases=["cap"])
     @commands.guild_only()
     async def caption(self, ctx: commands.Context, *, text: str = None):
         # base cooldown check (image rate); GIF gets a longer arm below
@@ -705,7 +705,7 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     # !quote
     # ------------------------------------------------------------------ #
-    @commands.command(name="quote", aliases=["qoute"])
+    @commands.command(name="quote", aliases=["qoute", "q"])
     @commands.guild_only()
     async def quote(self, ctx: commands.Context):
         try:
@@ -767,29 +767,23 @@ class UtilitiesCog(commands.Cog):
     # ------------------------------------------------------------------ #
     @commands.Cog.listener("on_message")
     async def media_mention_listener(self, message: discord.Message):
-        # only real users, only when the bot is explicitly @mentioned
+        # only real users
         if not message.guild or message.author.bot:
             return
-        if self.bot.user is None or self.bot.user not in message.mentions:
-            return
-        # @everyone/@here shouldn't count as a mention of us
-        if message.mention_everyone:
+        if self.bot.user is None:
             return
         if not media.ENABLED():
             return
-        # category gate (so admins can disable utilities entirely)
         if self.repo is not None and not await self._enabled(message.guild.id):
             return
 
-        # find a URL by priority: replied message -> this message -> embeds
-        url = await self._find_media_url(message)
-        if not url:
-            # only nudge if they actually just pinged us with nothing usable
-            await message.reply(embed=_compact("Download",
-                "Reply to a message with a supported public video link, then mention me.", WARN),
-                allowed_mentions=NONE)
+        # STRICT trigger: the message must be EXACTLY "@Ignio <one url>" with
+        # nothing before the mention and nothing after the url. This prevents
+        # replies, mid-sentence mentions, extra text, or multiple urls from ever
+        # triggering a download.
+        url = self._strict_mention_url(message)
+        if url is None:
             return
-
         if not media.looks_supported(url):
             await message.reply(embed=_compact("Download", "I could not download media from that link.", WARN),
                                 allowed_mentions=NONE)
@@ -801,7 +795,6 @@ class UtilitiesCog(commands.Cog):
                 allowed_mentions=NONE)
             return
 
-        # per-user cooldown
         try:
             manager.check_cooldown("media", message.author.id, media.USER_COOLDOWN())
         except CooldownError as e:
@@ -811,7 +804,6 @@ class UtilitiesCog(commands.Cog):
 
         loading = None
         try:
-            # one active download per user + per-guild concurrency cap
             async with manager.slot("media:user", message.author.id, 1):
                 async with manager.slot("media", message.guild.id, media.MAX_CONCURRENT()):
                     manager.arm_cooldown("media", message.author.id, media.USER_COOLDOWN())
@@ -832,25 +824,24 @@ class UtilitiesCog(commands.Cog):
                 except Exception:
                     pass
 
-    async def _find_media_url(self, message) -> str | None:
-        # 1) replied-to message
-        if message.reference:
-            try:
-                t = await message.channel.fetch_message(message.reference.message_id)
-                u = resolver.first_video_target(t)
-                if not u:
-                    urls = resolver.resolve_targets(t)["urls"]
-                    u = next((x for x in urls if media.looks_supported(x)), None)
-                if u:
-                    return u
-            except Exception:
-                pass
-        # 2) the mention message itself (strip the bot mention text first)
-        urls = resolver.extract_urls(message.content or "")
-        u = next((x for x in urls if media.looks_supported(x)), None)
-        if u:
-            return u
-        return None
+    def _strict_mention_url(self, message) -> str | None:
+        """Return the URL only if the message is exactly '@Ignio <one-url>'.
+        Anchored: ^\\s*<@!?BOT_ID>\\s+(https?://\\S+)\\s*$ — no reply, no extra text,
+        no second url, mention must be first."""
+        if message.reference is not None:
+            return None  # replies never trigger auto-download
+        if message.mention_everyone:
+            return None
+        content = (message.content or "").strip()
+        bot_id = self.bot.user.id
+        m = re.match(rf"^<@!?{bot_id}>\s+(https?://\S+)\s*$", content)
+        if not m:
+            return None
+        url = m.group(1)
+        # exactly one URL — reject if any additional url is present anywhere
+        if len(resolver.extract_urls(content)) != 1:
+            return None
+        return url
 
     async def _do_media_download(self, message, url: str):
         res = await media.download(url)

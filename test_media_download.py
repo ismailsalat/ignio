@@ -168,9 +168,37 @@ def test_guild_limit():
     check("tier 3 = 100MB", UtilitiesCog._guild_upload_limit_mb(G3()) == 100.0)
 
 
+
+
+def test_strict_mention_trigger():
+    """Download triggers ONLY on '@Ignio <one-url>' with nothing extra."""
+    import re
+    from core.utilities import resolver
+    def strict(content, is_reply=False, mention_everyone=False, bot_id=999):
+        if is_reply or mention_everyone:
+            return None
+        content = content.strip()
+        m = re.match(rf"^<@!?{bot_id}>\s+(https?://\S+)\s*$", content)
+        if not m:
+            return None
+        if len(resolver.extract_urls(content)) != 1:
+            return None
+        return m.group(1)
+    B = "<@999>"
+    check("valid: @bot <url> triggers", strict(f"{B} https://tiktok.com/x") == "https://tiktok.com/x")
+    check("mention not first -> ignored", strict(f"hi {B} https://tiktok.com/x") is None)
+    check("no url -> ignored", strict(f"{B} look at this") is None)
+    check("text after url -> ignored", strict(f"{B} https://tiktok.com/x lol") is None)
+    check("two urls -> ignored", strict(f"{B} https://a.com/1 https://b.com/2") is None)
+    check("no mention -> ignored", strict("normal msg https://tiktok.com/x") is None)
+    check("reply -> ignored", strict(f"{B} https://tiktok.com/x", is_reply=True) is None)
+    check("mention_everyone -> ignored", strict(f"{B} https://tiktok.com/x", mention_everyone=True) is None)
+
+
 def main():
     print("[test_media_download]")
     test_supported_detection()
+    test_strict_mention_trigger()
     test_redaction()
     test_source_name()
     test_config_defaults()

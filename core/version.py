@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.4",
+        "date": "2026-06-30",
+        "title": "Media trigger fix + aliases",
+        "notes": [
+            "Video download now triggers ONLY on '@Ignio <one-url>' (strict, anchored)",
+            "Replies, mid-sentence mentions, extra text, and 2+ urls never trigger it",
+            "Reply commands (!tldr/!song/!caption/!xray) still work as before",
+            "Added short aliases: !w (weather) !cap (caption) !x (xray) !tl (tldr) !q (quote)",
+        ],
+    },
     {
         "version": "1.9.3",
         "date": "2026-06-30",
