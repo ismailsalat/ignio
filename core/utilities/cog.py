@@ -622,8 +622,27 @@ class UtilitiesCog(commands.Cog):
         n_emb = len(getattr(t, "embeds", []))
         print(f"[Ignio][Caption] replied msg {t.id} has {n_att} attachment(s), {n_emb} embed(s)")
 
-        # ONLY use the message the user explicitly replied to — never hunt for
-        # other images in the channel (that captions the wrong thing).
+        # FULL DEBUG DUMP: log every field of every embed so we can see exactly
+        # what media URLs Discord gave us (and their real sizes/types).
+        for i, emb in enumerate(getattr(t, "embeds", [])):
+            try:
+                print(f"[Ignio][Caption] embed[{i}] type={getattr(emb,'type',None)!r} url={getattr(emb,'url',None)!r}")
+                print(f"[Ignio][Caption] embed[{i}] provider={getattr(getattr(emb,'provider',None),'name',None)!r}")
+                for fld in ("image", "thumbnail", "video"):
+                    obj = getattr(emb, fld, None)
+                    if obj is not None:
+                        print(f"[Ignio][Caption] embed[{i}].{fld}: "
+                              f"url={getattr(obj,'url',None)!r} "
+                              f"proxy={getattr(obj,'proxy_url',None)!r} "
+                              f"w={getattr(obj,'width',None)} h={getattr(obj,'height',None)}")
+                # raw dict fallback (discord.py exposes to_dict)
+                if hasattr(emb, "to_dict"):
+                    import json as _json
+                    print(f"[Ignio][Caption] embed[{i}] raw={_json.dumps(emb.to_dict())[:600]}")
+            except Exception as _e:
+                print(f"[Ignio][Caption] embed dump error: {_e}")
+
+        # ONLY use the message the user explicitly replied to.
         result = await self._image_from_message(t)
         if result[0] is None:
             print("[Ignio][Caption] no usable image/GIF on the replied message")
@@ -687,11 +706,27 @@ class UtilitiesCog(commands.Cog):
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
+                    # Klipy/other CDNs give a tiny preview; expand to larger tiers
+                    if P.is_klipy_url(u):
+                        kv = await P.resolve_klipy(u)
+                        if kv:
+                            for v in kv.get("variants", []):
+                                candidates.append(v)
+                                if v.lower().split("?")[0].endswith(".mp4"):
+                                    mp4_candidates.append(v)
             # capture the video url as an ffmpeg-convert fallback (not for PIL)
             vid = getattr(emb, "video", None)
             vurl = getattr(vid, "url", None) if vid else None
             if vurl:
                 mp4_candidates.append(vurl)
+                if P.is_klipy_url(vurl):
+                    kv = await P.resolve_klipy(vurl)
+                    if kv:
+                        for v in kv.get("variants", []):
+                            if v.lower().split("?")[0].endswith(".mp4"):
+                                mp4_candidates.append(v)
+                            else:
+                                candidates.append(v)
 
         # try only URLs that look like images; keep order, de-dupe
         seen = set()

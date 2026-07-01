@@ -467,6 +467,41 @@ async def resolve_tenor(url: str) -> dict | None:
     if not (gif or gif_direct or mp4):
         return None
     return {"gif": gif, "gif_direct": gif_direct, "mp4": mp4}
+
+
+def is_klipy_url(url: str) -> bool:
+    return bool(url) and "klipy.com" in url.lower()
+
+
+async def resolve_klipy(url: str) -> dict | None:
+    """Resolve a Klipy media/page URL to larger direct-media variants to try.
+    Klipy's embed gives a tiny preview; the path segment after the host is a
+    size tier (e.g. 'ii'). We generate larger-tier variants of BOTH the .webp
+    and a .gif/.mp4 sibling so the caller can try to fetch a real animation."""
+    ok, _ = is_safe_url(url)
+    if not ok:
+        return None
+    variants = []
+    base = url.split("?")[0]
+    if "static.klipy.com" in base.lower():
+        # swap the tier code (first path segment after host) to bigger sizes
+        for tier in ("hd", "gif", "lg", "md", "original", "raw"):
+            variants.append(_re.sub(r"(https?://static\.klipy\.com/)[^/]+/",
+                                    rf"\1{tier}/", base, count=1))
+        # also try the same path but as .gif and .mp4 extensions
+        stem = _re.sub(r"\.(webp|gif|mp4)$", "", base, flags=_re.I)
+        for ext in (".gif", ".mp4"):
+            variants.append(stem + ext)
+            for tier in ("hd", "gif", "lg"):
+                variants.append(_re.sub(r"(https?://static\.klipy\.com/)[^/]+/",
+                                        rf"\1{tier}/", stem + ext, count=1))
+    # de-dupe, drop the original tiny url
+    seen = set()
+    out = []
+    for v in variants:
+        if v != base and v not in seen:
+            seen.add(v); out.append(v)
+    return {"variants": out}
 def song_key() -> str | None:
     return os.environ.get("UTIL_SONG_API_KEY") or None
 

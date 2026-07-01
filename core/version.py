@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.8"
+VERSION = "1.9.9"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.9",
+        "date": "2026-06-30",
+        "title": "Caption: Klipy tiers + full embed debug",
+        "notes": [
+            "Root cause found: the embed URLs were tiny Klipy PREVIEW stubs (840 bytes),",
+            "  not the real animation — ffmpeg correctly reported no video packets",
+            "Now expands Klipy static URLs to larger tiers (hd/gif/lg) + .gif/.mp4 variants",
+            "Added a FULL embed dump (every field + raw dict) so remaining cases are clear",
+        ],
+    },
     {
         "version": "1.9.8",
         "date": "2026-06-30",
