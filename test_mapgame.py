@@ -33,6 +33,7 @@ def main():
         check(f"renders board for {nm}", data[:8].startswith(b"\x89PNG"))
     test_session_dots()
     test_no_not_quite()
+    test_persistent_message()
     print(f"\n  RESULT: {len(PASS)} passed, {len(FAIL)} failed")
     if FAIL: print("  FAILURES:", FAIL); sys.exit(1)
 
@@ -43,6 +44,37 @@ def test_session_dots():
     check("round 1 dots empty", c._dots(0) == "○ ○ ○ ○ ○")
     check("round 3 dots", c._dots(2) == "● ● ○ ○ ○")
     check("round 5 dots full", c._dots(5) == "● ● ● ● ●")
+
+
+def test_persistent_message():
+    import asyncio
+    from unittest.mock import MagicMock
+    from core.games.mapgame_cog import MapGameCog
+    class FakeMessage:
+        _c = 0
+        def __init__(self):
+            FakeMessage._c += 1; self.id = FakeMessage._c; self.edited = 0; self.deleted = False
+        async def edit(self, **k):
+            assert not self.deleted; self.edited += 1
+        async def delete(self): self.deleted = True
+    class FakeCtx:
+        def __init__(self):
+            self.channel = MagicMock(); self.channel.id = 555
+            self.prefix = "!!"
+        async def send(self, *a, **k): return FakeMessage()
+    cog = MapGameCog.__new__(MapGameCog)
+    country = {"x":0.5,"y":0.5,"name":"Japan","emoji":"J","difficulty":2}
+    async def run():
+        ctx = FakeCtx(); state = {"msg": None}
+        await cog._show_round_card(ctx, state, country, 1, 5)
+        m1 = state["msg"]
+        await cog._show_transition(ctx, state, "w", 0x4FB477)
+        same = state["msg"].id == m1.id and m1.edited == 1
+        await cog._show_round_card(ctx, state, country, 2, 5)
+        replaced = state["msg"].id != m1.id and m1.deleted
+        return same and replaced
+    check("persistent msg: transition edits, new round replaces+deletes old",
+          asyncio.run(run()))
 
 
 def test_no_not_quite():

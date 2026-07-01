@@ -96,31 +96,42 @@ class FlagGameCog(commands.Cog):
     def _dots(self, done: int, total: int = 5) -> str:
         return " ".join("●" if i < done else "○" for i in range(total))
 
+    async def _update_flag_msg(self, ctx, state, embed):
+        """Edit the one persistent flag message, or create it the first time."""
+        msg = state.get("msg")
+        if msg is not None:
+            try:
+                await msg.edit(embed=embed)
+                return
+            except Exception:
+                pass
+        state["msg"] = await ctx.send(embed=embed)
+
     async def _run_flag_session(self, ctx, gid, total_rounds: int = 5):
+        state = {"msg": None}
         winners = []
         for rnd in range(1, total_rounds + 1):
-            res = await self._run_flag_round(ctx, gid, rnd, total_rounds)
+            res = await self._run_flag_round(ctx, gid, rnd, total_rounds, state)
             winners.append((rnd, res["winner"], res["country"]))
             if rnd < total_rounds:
                 await asyncio.sleep(2)
         lines = [f"{r}. {(w or 'Nobody')} — {c}" for r, w, c in winners]
-        await ctx.send(embed=discord.Embed(
+        await self._update_flag_msg(ctx, state, discord.Embed(
             title="🏁 Flag Game complete",
             description="\n".join(lines) + f"\n\nRun `{ctx.prefix}mapflag` to start another race.",
             color=ACCENT))
 
-    async def _run_flag_round(self, ctx, gid, round_no: int, total_rounds: int):
+    async def _run_flag_round(self, ctx, gid, round_no: int, total_rounds: int, state):
         country = secrets.choice(COUNTRIES)
         claim = {"claimed": False, "winner": None}
         lock = asyncio.Lock()
         last_guess: dict[int, float] = {}
 
-        e = discord.Embed(
+        await self._update_flag_msg(ctx, state, discord.Embed(
             title=f"🚩 Flag Game · Round {round_no}/{total_rounds}",
             description=(f"# {country['emoji']}\n{self._dots(round_no - 1, total_rounds)}\n\n"
                          f"**What country is this flag?** Type your guess · {ROUND_SECONDS}s"),
-            color=ACCENT)
-        await ctx.send(embed=e)
+            color=ACCENT))
 
         def check(m):
             if m.channel.id != ctx.channel.id or m.author.bot:
@@ -148,9 +159,9 @@ class FlagGameCog(commands.Cog):
             break
 
         if winner is None:
-            await ctx.send(embed=discord.Embed(
-                description=f"⌛ Time's up — it was **{country['emoji']} {country['name']}**."
-                            + ("" if round_no == total_rounds else "\nNext round starting…"),
+            nxt = "" if round_no == total_rounds else "\n\nNext round starting…"
+            await self._update_flag_msg(ctx, state, discord.Embed(
+                description=f"⌛ Time's up — it was **{country['emoji']} {country['name']}**." + nxt,
                 color=RED))
             return {"winner": None, "country": country["name"]}
 
@@ -171,7 +182,7 @@ class FlagGameCog(commands.Cog):
             desc += "\n(daily sob cap reached — still a great guess!)"
         if round_no < total_rounds:
             desc += f"\n\nRound {round_no + 1} starting…"
-        await ctx.send(embed=discord.Embed(description=desc, color=GREEN))
+        await self._update_flag_msg(ctx, state, discord.Embed(description=desc, color=GREEN))
         return {"winner": winner.display_name, "country": country["name"]}
 
 

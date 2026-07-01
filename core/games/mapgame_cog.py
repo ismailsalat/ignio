@@ -92,35 +92,56 @@ class MapGameCog(commands.Cog):
     def _dots(self, done: int, total: int = 5) -> str:
         return " ".join("●" if i < done else "○" for i in range(total))
 
+    async def _show_round_card(self, ctx, state, country, round_no, total_rounds):
+        """Replace the game message with a fresh round card (map image).
+        Discord can't swap an attachment via edit, so we delete + resend, keeping
+        exactly one game card in the channel."""
+        buf = render_board(country["x"], country["y"], round_no, total_rounds)
+        header = (f"🗺️ **Map Game** · Round {round_no}/{total_rounds}\n"
+                  f"{self._dots(round_no - 1, total_rounds)}\n"
+                  f"Type the country name below · {GUESS_SECONDS}s")
+        old = state.get("msg")
+        state["msg"] = await ctx.send(content=header, file=discord.File(buf, filename="mapgame.png"))
+        if old is not None:
+            try:
+                await old.delete()
+            except Exception:
+                pass
+
+    async def _show_transition(self, ctx, state, desc, color):
+        """Edit the current game message into a compact result state (no image)."""
+        msg = state.get("msg")
+        e = discord.Embed(description=desc, color=color)
+        if msg is not None:
+            try:
+                await msg.edit(content=None, embed=e, attachments=[])
+                return
+            except Exception:
+                pass
+        state["msg"] = await ctx.send(embed=e)
+
     async def _run_session(self, ctx, gid, total_rounds: int = 5):
-        winners = []  # (round_no, winner_display_or_None, country_name)
+        import asyncio
+        state = {"msg": None}
+        winners = []
         for rnd in range(1, total_rounds + 1):
-            result = await self._run_round(ctx, gid, rnd, total_rounds)
+            result = await self._run_round(ctx, gid, rnd, total_rounds, state)
             winners.append((rnd, result["winner"], result["country"]))
             if rnd < total_rounds:
-                import asyncio
                 await asyncio.sleep(2)
-        # final results card
-        lines = []
-        for rno, win, cname in winners:
-            who = win if win else "Nobody"
-            lines.append(f"{rno}. {who} — {cname}")
-        e = discord.Embed(title="🏁 Map Game complete",
-                          description="\n".join(lines) + f"\n\nRun `{ctx.prefix}mapgame` to start another race.",
-                          color=ACCENT)
-        await ctx.send(embed=e)
+        # final results — edit the same card into a compact summary (no image)
+        lines = [f"{r}. {(w or 'Nobody')} — {c}" for r, w, c in winners]
+        desc = "🏁 **Map Game complete**\n\n" + "\n".join(lines) + \
+               f"\n\nRun `{ctx.prefix}mapgame` to start another race."
+        await self._show_transition(ctx, state, desc, ACCENT)
 
-    async def _run_round(self, ctx, gid, round_no: int, total_rounds: int):
+    async def _run_round(self, ctx, gid, round_no, total_rounds, state):
         import asyncio
         country = secrets.choice(COUNTRIES)
         reward = REWARD_BY_DIFFICULTY.get(country["difficulty"], 3)
 
-        buf = render_board(country["x"], country["y"], round_no, total_rounds)
-        header = f"🗺️ **Map Game** · Round {round_no}/{total_rounds}\n{self._dots(round_no - 1, total_rounds)}"
-        body = f"\nType the country name below · {GUESS_SECONDS}s"
-        await ctx.send(content=header + body, file=discord.File(buf, filename="mapgame.png"))
+        await self._show_round_card(ctx, state, country, round_no, total_rounds)
 
-        # atomic winner state for this round
         winner = {"id": None, "display": None}
         lock = asyncio.Lock()
         last_guess: dict[int, float] = {}
@@ -128,7 +149,6 @@ class MapGameCog(commands.Cog):
         def check(m):
             if m.channel.id != ctx.channel.id or m.author.bot:
                 return False
-            # per-user ~1s throttle to stop spam
             now = time.monotonic()
             if now - last_guess.get(m.author.id, 0) < 1.0:
                 return False
@@ -138,13 +158,12 @@ class MapGameCog(commands.Cog):
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=GUESS_SECONDS)
         except asyncio.TimeoutError:
-            await ctx.send(embed=discord.Embed(
-                description=f"⌛ Time's up — it was **{country['emoji']} {country['name']}**."
-                            + ("" if round_no == total_rounds else "\nNext round starting…"),
-                color=RED))
+            nxt = "" if round_no == total_rounds else f"\n\nRound {round_no + 1} starting…"
+            await self._show_transition(
+                ctx, state,
+                f"⌛ Time's up — it was **{country['emoji']} {country['name']}**." + nxt, RED)
             return {"winner": None, "country": country["name"]}
 
-        # atomically claim the round winner (first correct only)
         async with lock:
             if winner["id"] is not None:
                 return {"winner": winner["display"], "country": country["name"]}
@@ -169,7 +188,7 @@ class MapGameCog(commands.Cog):
             desc += "\n(daily sob cap reached — still a great guess!)"
         if round_no < total_rounds:
             desc += f"\n\nRound {round_no + 1} starting…"
-        await ctx.send(embed=discord.Embed(description=desc, color=GREEN))
+        await self._show_transition(ctx, state, desc, GREEN)
         return {"winner": msg.author.display_name, "country": country["name"]}
 
 

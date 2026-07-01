@@ -8,12 +8,26 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "5-round races"
+CODENAME = "Persistent game card"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.3.0",
+        "date": "2026-06-30",
+        "title": "Persistent game card",
+        "notes": [
+            "mapgame/mapflag now use ONE game card per 5-round session instead of",
+            "  stacking a winner embed + a new big map card every round",
+            "Winner/timeout transitions EDIT the same message (compact, no image)",
+            "New round replaces the card (delete+resend, since Discord cannot swap an",
+            "  attachment via edit); flag game edits in place (emoji, no attachment)",
+            "Final results edit the same card; chat stays clean",
+            "Rewards, caps, timers, answer rules, ledger all UNCHANGED",
+        ],
+    },
     {
         "version": "2.2.0",
         "date": "2026-06-30",
