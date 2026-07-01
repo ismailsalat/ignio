@@ -8,12 +8,25 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Caption via source page"
+CODENAME = "5-round races"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.2.0",
+        "date": "2026-06-30",
+        "title": "5-round map/flag races",
+        "notes": [
+            "!mapgame + !mapflag are now 5-round server races that auto-continue",
+            "REMOVED the '❌ Not quite' reply — wrong guesses are now completely silent",
+            "Anyone can guess; first correct wins each round (atomic, one winner)",
+            "Round X/5 + progress dots update each round; final results card at the end",
+            "~1s per-user guess throttle; reward amounts and daily caps UNCHANGED",
+            "Caption GIF: disposal=1 after full-frame compositing (fixes black lower frames)",
+        ],
+    },
     {
         "version": "2.1.1",
         "date": "2026-06-30",

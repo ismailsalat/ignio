@@ -71,75 +71,106 @@ class MapGameCog(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, 12, commands.BucketType.channel)
     async def mapgame(self, ctx: commands.Context):
-        """Guess the country the arrow points to. Pays a little sob (daily cap)."""
+        """A 5-round server race: guess the country the arrow points to.
+        Anyone can guess. First correct answer wins the round. Wrong guesses are
+        silent. Pays a little sob (daily cap unchanged)."""
         gid = ctx.guild.id
         if not await self._enabled(gid):
             await ctx.reply(embed=discord.Embed(description="The map game is disabled here.", color=RED))
             return
-        # one active map per channel, so the channel never floods with maps
         if ctx.channel.id in self._active:
             await ctx.reply(embed=discord.Embed(
-                description="A map round is already running here — answer that one first!",
+                description="A Map Game is already running here — join by typing your guess!",
                 color=ACCENT))
             return
         self._active.add(ctx.channel.id)
         try:
-            await self._run_round(ctx, gid)
+            await self._run_session(ctx, gid)
         finally:
             self._active.discard(ctx.channel.id)
 
-    async def _run_round(self, ctx, gid):
+    def _dots(self, done: int, total: int = 5) -> str:
+        return " ".join("●" if i < done else "○" for i in range(total))
+
+    async def _run_session(self, ctx, gid, total_rounds: int = 5):
+        winners = []  # (round_no, winner_display_or_None, country_name)
+        for rnd in range(1, total_rounds + 1):
+            result = await self._run_round(ctx, gid, rnd, total_rounds)
+            winners.append((rnd, result["winner"], result["country"]))
+            if rnd < total_rounds:
+                import asyncio
+                await asyncio.sleep(2)
+        # final results card
+        lines = []
+        for rno, win, cname in winners:
+            who = win if win else "Nobody"
+            lines.append(f"{rno}. {who} — {cname}")
+        e = discord.Embed(title="🏁 Map Game complete",
+                          description="\n".join(lines) + f"\n\nRun `{ctx.prefix}mapgame` to start another race.",
+                          color=ACCENT)
+        await ctx.send(embed=e)
+
+    async def _run_round(self, ctx, gid, round_no: int, total_rounds: int):
+        import asyncio
         country = secrets.choice(COUNTRIES)
         reward = REWARD_BY_DIFFICULTY.get(country["difficulty"], 3)
-        earned = await self._earned_today(gid, ctx.author.id)
-        capped = earned >= DAILY_REWARD_CAP
 
-        buf = render_board(country["x"], country["y"])
-        intro = ("🗺️ **Map Game** — what country is the arrow pointing to? "
-                 f"You have {GUESS_SECONDS}s. Type your answer!")
-        if capped:
-            intro += "\n*(You've hit today's sob cap — still fun to play though!)*"
-        await ctx.reply(content=intro, file=discord.File(buf, filename="mapgame.png"))
+        buf = render_board(country["x"], country["y"], round_no, total_rounds)
+        header = f"🗺️ **Map Game** · Round {round_no}/{total_rounds}\n{self._dots(round_no - 1, total_rounds)}"
+        body = f"\nType the country name below · {GUESS_SECONDS}s"
+        await ctx.send(content=header + body, file=discord.File(buf, filename="mapgame.png"))
+
+        # atomic winner state for this round
+        winner = {"id": None, "display": None}
+        lock = asyncio.Lock()
+        last_guess: dict[int, float] = {}
 
         def check(m):
-            return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+            if m.channel.id != ctx.channel.id or m.author.bot:
+                return False
+            # per-user ~1s throttle to stop spam
+            now = time.monotonic()
+            if now - last_guess.get(m.author.id, 0) < 1.0:
+                return False
+            last_guess[m.author.id] = now
+            return _matches(m.content, country)  # only CORRECT guesses pass; wrong = silent
 
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=GUESS_SECONDS)
-        except Exception:
+        except asyncio.TimeoutError:
             await ctx.send(embed=discord.Embed(
-                title="⏱️ Time's up!",
-                description=f"It was **{country['emoji']} {country['name']}**.",
+                description=f"⌛ Time's up — it was **{country['emoji']} {country['name']}**."
+                            + ("" if round_no == total_rounds else "\nNext round starting…"),
                 color=RED))
-            return
+            return {"winner": None, "country": country["name"]}
 
-        if _matches(msg.content, country):
-            # award if under the daily cap
-            give = 0
-            if not capped:
-                give = min(reward, DAILY_REWARD_CAP - earned)
-            e = discord.Embed(title="✅ Correct!",
-                              description=f"That's **{country['emoji']} {country['name']}**!",
-                              color=GREEN)
-            if give > 0:
-                try:
-                    await self.repo.adjust_received(
-                        gid, ctx.author.id, give, event_type=ledger.EVT_MAPGAME_REWARD,
-                        metadata={"country": country["name"]})
-                    await self._add_earned(gid, ctx.author.id, give)
-                    new_today = earned + give
-                    e.add_field(name="Reward", value=f"+{give} sobs  ·  {new_today}/{DAILY_REWARD_CAP} today",
-                                inline=False)
-                except Exception as ex:
-                    print(f"[Ignio][MapGame] reward failed: {ex}")
-            else:
-                e.set_footer(text="No sobs this time (daily cap reached) — but nice guess!")
-            await msg.reply(embed=e)
-        else:
-            await msg.reply(embed=discord.Embed(
-                title="❌ Not quite",
-                description=f"It was **{country['emoji']} {country['name']}**. Try again with `{ctx.prefix}mapgame`!",
-                color=RED))
+        # atomically claim the round winner (first correct only)
+        async with lock:
+            if winner["id"] is not None:
+                return {"winner": winner["display"], "country": country["name"]}
+            winner["id"] = msg.author.id
+            winner["display"] = msg.author.display_name
+
+        # reward with the SAME cap logic as before (unchanged amounts/caps)
+        earned = await self._earned_today(gid, msg.author.id)
+        capped = earned >= DAILY_REWARD_CAP
+        give = 0 if capped else min(reward, DAILY_REWARD_CAP - earned)
+        desc = f"✅ **{msg.author.display_name}** got it — {country['emoji']} {country['name']}"
+        if give > 0:
+            try:
+                await self.repo.adjust_received(
+                    gid, msg.author.id, give, event_type=ledger.EVT_MAPGAME_REWARD,
+                    metadata={"country": country["name"]})
+                await self._add_earned(gid, msg.author.id, give)
+                desc += f"\n+{give} sobs · {earned + give}/{DAILY_REWARD_CAP} today"
+            except Exception as ex:
+                print(f"[Ignio][MapGame] reward failed: {ex}")
+        elif capped:
+            desc += "\n(daily sob cap reached — still a great guess!)"
+        if round_no < total_rounds:
+            desc += f"\n\nRound {round_no + 1} starting…"
+        await ctx.send(embed=discord.Embed(description=desc, color=GREEN))
+        return {"winner": msg.author.display_name, "country": country["name"]}
 
 
 def _today() -> str:

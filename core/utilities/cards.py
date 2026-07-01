@@ -183,7 +183,7 @@ def caption_gif(base: Image.Image, caption: str, max_bytes: int = 8 * 1024 * 102
 
     buf = io.BytesIO()
     frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
-                   duration=durations, loop=0, disposal=2, optimize=False)
+                   duration=durations, loop=0, disposal=1, optimize=False)
     if buf.tell() > max_bytes:
         base.seek(0)
         return caption_image(base.convert("RGBA"), cap), False

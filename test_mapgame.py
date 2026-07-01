@@ -31,8 +31,26 @@ def main():
         buf = render_board(c["x"], c["y"], 1, 5)
         data = buf.read()
         check(f"renders board for {nm}", data[:8].startswith(b"\x89PNG"))
+    test_session_dots()
+    test_no_not_quite()
     print(f"\n  RESULT: {len(PASS)} passed, {len(FAIL)} failed")
     if FAIL: print("  FAILURES:", FAIL); sys.exit(1)
+
+
+def test_session_dots():
+    from core.games.mapgame_cog import MapGameCog
+    c = MapGameCog.__new__(MapGameCog)
+    check("round 1 dots empty", c._dots(0) == "○ ○ ○ ○ ○")
+    check("round 3 dots", c._dots(2) == "● ● ○ ○ ○")
+    check("round 5 dots full", c._dots(5) == "● ● ● ● ●")
+
+
+def test_no_not_quite():
+    src = open("core/games/mapgame_cog.py").read()
+    check("no 'Not quite' reply on wrong guess", "Not quite" not in src)
+    check("wrong guesses filtered (only correct pass check)", "_matches(m.content, country)" in src)
+    check("5-round session exists", "_run_session" in src and "total_rounds" in src)
+
 
 if __name__ == "__main__":
     main()
