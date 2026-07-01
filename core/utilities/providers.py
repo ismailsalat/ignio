@@ -417,6 +417,111 @@ import re as _re
 _TENOR_VIEW = _re.compile(r"https?://(?:www\.)?tenor\.com/view/[^\s]+", _re.I)
 
 
+def is_youtube_url(url: str) -> bool:
+    u = (url or "").lower()
+    return "youtube.com/" in u or "youtu.be/" in u
+
+
+async def youtube_transcript(url: str, max_chars: int = 6000) -> str | None:
+    """Fetch a YouTube video's transcript via yt-dlp subtitle extraction (manual
+    subs first, then auto-captions). No API key or paid quota needed. Returns
+    plain text, or None if unavailable."""
+    ok, _ = is_safe_url(url)
+    if not ok:
+        return None
+    try:
+        import yt_dlp  # optional dependency
+    except Exception:
+        return None
+
+    def _blocking():
+        opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["en", "en-US", "en-GB"],
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception:
+            return None
+        # find a subtitle track (manual preferred, else automatic)
+        subs = (info.get("subtitles") or {})
+        autos = (info.get("automatic_captions") or {})
+        track = None
+        for lang in ("en", "en-US", "en-GB"):
+            if lang in subs:
+                track = subs[lang]; break
+        if track is None:
+            for lang in ("en", "en-US", "en-GB"):
+                if lang in autos:
+                    track = autos[lang]; break
+        if not track:
+            return None
+        # pick a json3/vtt url from the track formats
+        url_pick = None
+        for fmt in track:
+            if fmt.get("ext") in ("json3", "srv3", "vtt"):
+                url_pick = fmt.get("url"); break
+        if not url_pick and track:
+            url_pick = track[0].get("url")
+        return url_pick
+
+    loop = asyncio.get_event_loop()
+    sub_url = await loop.run_in_executor(None, _blocking)
+    if not sub_url:
+        return None
+    # download the subtitle file and strip to plain text
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+            async with s.get(sub_url, headers=_UA) as r:
+                if r.status != 200:
+                    return None
+                raw = await r.text()
+    except Exception:
+        return None
+    text = _strip_captions(raw)
+    return text[:max_chars] if text else None
+
+
+def _strip_captions(raw: str) -> str:
+    """Extract plain text from a VTT or json3 caption payload."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    # json3 (YouTube) — pull 'utf8' segments
+    if raw.startswith("{"):
+        import json as _json
+        try:
+            data = _json.loads(raw)
+            words = []
+            for ev in data.get("events", []):
+                for seg in ev.get("segs", []) or []:
+                    t = seg.get("utf8", "")
+                    if t and t != "\n":
+                        words.append(t)
+            return _re.sub(r"\s+", " ", "".join(words)).strip()
+        except Exception:
+            return ""
+    # VTT/SRT — drop timestamps and cue numbers
+    lines = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln or "-->" in ln or ln.isdigit() or ln.upper().startswith("WEBVTT"):
+            continue
+        ln = _re.sub(r"<[^>]+>", "", ln)  # strip inline tags
+        lines.append(ln)
+    # de-dup consecutive repeats (auto-captions repeat a lot)
+    out = []
+    for ln in lines:
+        if not out or out[-1] != ln:
+            out.append(ln)
+    return _re.sub(r"\s+", " ", " ".join(out)).strip()
+
+
 def is_tenor_url(url: str) -> bool:
     return bool(url) and "tenor.com/view/" in url.lower()
 

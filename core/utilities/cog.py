@@ -45,6 +45,7 @@ class UtilitiesCog(commands.Cog):
         self.settings = settings
         self.repo = sob_repo
         self._afk_notice: dict[tuple[int, int, int], float] = {}  # (g,ch,target)->ts
+        self._tldr_source = "caption"
         # log host capabilities so caption/media issues are obvious at boot
         try:
             from PIL import features as _pf
@@ -261,6 +262,22 @@ class UtilitiesCog(commands.Cog):
                 if v:
                     parts.append(str(v))
         joined = "\n".join(parts).strip()
+
+        # if a YouTube link is present, fetch its transcript (no API cost) and
+        # prepend it — this is the real content, far better than title-only
+        url_text = f"{text or ''} {content}"
+        import re as _re
+        m = _re.search(r"https?://\S+", url_text)
+        if m and P.is_youtube_url(m.group(0)):
+            try:
+                transcript = await P.youtube_transcript(m.group(0).rstrip(">.,"))
+                if transcript:
+                    joined = (f"[Transcript]\n{transcript}\n\n[Caption]\n{joined}").strip()
+                    self._tldr_source = "transcript"
+                else:
+                    self._tldr_source = "caption"
+            except Exception:
+                self._tldr_source = "caption"
         return joined[:8000] if joined else None
 
     # ------------------------------------------------------------------ #
@@ -827,27 +844,46 @@ class UtilitiesCog(commands.Cog):
         return None, False
 
     async def _download_image_bytes(self, url: str) -> bytes | None:
-        """Safely download an image URL (size-capped, SSRF-guarded, follows
-        redirects e.g. c.tenor.com -> media.tenor.com)."""
+        """Safely download an image/GIF URL IN FULL (size-capped, SSRF-guarded,
+        follows redirects). Streams the whole body in chunks — a single
+        content.read(n) can return a truncated buffer for chunked responses,
+        which was feeding Pillow/ffmpeg incomplete files (white/broken output)."""
         ok, _ = safety.is_safe_url(url)
         if not ok:
             return None
+        cap = 18 * 1024 * 1024  # 18MB hard cap
         try:
             import aiohttp
             ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as s:
-                async with s.get(url, headers={"User-Agent": ua}, allow_redirects=True) as r:
-                    if r.status != 200:
+            headers = {"User-Agent": ua,
+                       "Accept": "image/avif,image/webp,image/apng,image/gif,image/*,*/*",
+                       "Referer": "https://discord.com/"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+                async with s.get(url, headers=headers, allow_redirects=True) as r:
+                    if r.status not in (200, 206):
                         print(f"[Ignio][Caption] image URL returned {r.status} for {url.split('?')[0]}")
                         return None
-                    # re-validate the final URL after redirects (SSRF)
                     final = str(r.url)
                     fok, _ = safety.is_safe_url(final)
                     if not fok:
                         return None
-                    data = await r.content.read(12 * 1024 * 1024 + 1)
-                    if len(data) > 12 * 1024 * 1024:
+                    # stream the FULL body in chunks (do not truncate)
+                    buf = bytearray()
+                    async for chunk in r.content.iter_chunked(64 * 1024):
+                        buf.extend(chunk)
+                        if len(buf) > cap:
+                            print("[Ignio][Caption] download exceeded size cap")
+                            return None
+                    data = bytes(buf)
+                    # validate against Content-Length when present
+                    clen = r.headers.get("Content-Length")
+                    if clen and clen.isdigit():
+                        expected = int(clen)
+                        if len(data) < expected:
+                            print(f"[Ignio][Caption] SHORT download: got {len(data)} of {expected} bytes")
+                            return None
+                    if not data:
                         return None
                     return data
         except Exception as ex:

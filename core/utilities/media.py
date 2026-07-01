@@ -233,18 +233,26 @@ async def video_url_to_gif_bytes(url: str, max_seconds: int = 8) -> bytes | None
               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
         headers = {"User-Agent": ua, "Referer": "https://discord.com/",
                    "Accept": "*/*"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
             async with s.get(url, headers=headers) as r:
-                if r.status != 200:
+                if r.status not in (200, 206):
                     print(f"[Ignio][Caption] video download returned {r.status}")
                     return None
-                data = await r.content.read(25 * 1024 * 1024 + 1)
                 ctype = r.headers.get("Content-Type", "?")
+                clen = r.headers.get("Content-Length")
+                cap = 25 * 1024 * 1024
+                buf = bytearray()
+                async for chunk in r.content.iter_chunked(64 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > cap:
+                        print("[Ignio][Caption] source too large")
+                        return None
+                data = bytes(buf)
         if not data:
             print("[Ignio][Caption] video download was empty")
             return None
-        if len(data) > 25 * 1024 * 1024:
-            print("[Ignio][Caption] source too large")
+        if clen and clen.isdigit() and len(data) < int(clen):
+            print(f"[Ignio][Caption] SHORT video download: {len(data)} of {clen} bytes")
             return None
         # guard: if we got an HTML error page instead of media, bail with a note
         if data[:15].lstrip()[:1] == b"<" or b"<html" in data[:200].lower():

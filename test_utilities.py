@@ -442,6 +442,58 @@ def test_quote_clean():
     check("arabic kept", "حال" in _clean_quote_text("كيف حالك"))
 
 
+
+
+def test_full_download_streaming():
+    """Downloads must stream the FULL body, not a truncated buffer read."""
+    import asyncio
+    from unittest.mock import MagicMock, patch
+    from core.utilities.cog import UtilitiesCog
+    import discord
+    from discord.ext import commands
+    # a body delivered in several chunks (simulates chunked transfer)
+    full = b"GIF89a" + b"X" * 4000
+    chunks = [full[i:i+500] for i in range(0, len(full), 500)]
+    class FakeContent:
+        async def iter_chunked(self, n):
+            for c in chunks:
+                yield c
+    class FakeResp:
+        status = 200
+        url = "https://media.discordapp.net/x.gif"
+        headers = {"Content-Length": str(len(full)), "Content-Type": "image/gif"}
+        content = FakeContent()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+    class FakeSession:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def get(self, *a, **k): return FakeResp()
+    async def run():
+        bot = commands.Bot(command_prefix="!!", intents=discord.Intents.all())
+        cog = UtilitiesCog(bot, None, None)
+        with patch("aiohttp.ClientSession", FakeSession):
+            data = await cog._download_image_bytes("https://media.discordapp.net/x.gif")
+        return data
+    data = asyncio.run(run())
+    check("full body downloaded (not truncated)", data is not None and len(data) == len(full))
+
+
+
+
+def test_youtube_transcript_parsing():
+    from core.utilities.providers import is_youtube_url, _strip_captions
+    check("youtube.com detected", is_youtube_url("https://www.youtube.com/watch?v=x"))
+    check("youtu.be detected", is_youtube_url("https://youtu.be/x"))
+    check("shorts detected", is_youtube_url("https://youtube.com/shorts/x"))
+    check("non-youtube rejected", not is_youtube_url("https://tiktok.com/x"))
+    vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000\nHello world\n\n2\n00:00:03.000 --> 00:00:05.000\nsecond line"
+    check("VTT stripped to text", _strip_captions(vtt) == "Hello world second line")
+    j = '{"events":[{"segs":[{"utf8":"foo "},{"utf8":"bar"}]}]}'
+    check("json3 stripped to text", _strip_captions(j) == "foo bar")
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -455,6 +507,8 @@ def _extra_main():
     test_quote_twitter()
     test_gif_no_blank_frames()
     test_quote_clean()
+    test_full_download_streaming()
+    test_youtube_transcript_parsing()
     check("caption uses only the replied message", asyncio.run(test_caption_only_replied()))
     check("tenor gifv embed resolves to .gif (never mp4)", asyncio.run(test_tenor_embed_caption()))
     check("mp4 fallback converts to gif via ffmpeg", asyncio.run(test_mp4_fallback_caption()))

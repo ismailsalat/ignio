@@ -8,12 +8,26 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
-CODENAME = "Persistent game card"
+CODENAME = "Full downloads + YouTube transcripts"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.4.0",
+        "date": "2026-06-30",
+        "title": "Full downloads + YouTube transcripts",
+        "notes": [
+            "FIXED the real caption bug: downloads were TRUNCATED (content.read(n) returns",
+            "  a partial buffer for chunked responses). Even good Discord GIFs came out",
+            "  white/broken from incomplete bytes. Now streams the FULL body via",
+            "  iter_chunked + validates against Content-Length.",
+            "!tldr now reads YouTube transcripts (yt-dlp subtitles/auto-captions, no API",
+            "  cost) so YouTube summaries are real, not title-only",
+            "Applies to both the image downloader and the video->gif downloader",
+        ],
+    },
     {
         "version": "2.3.0",
         "date": "2026-06-30",
