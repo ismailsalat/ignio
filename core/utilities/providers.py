@@ -473,35 +473,58 @@ def is_klipy_url(url: str) -> bool:
     return bool(url) and "klipy.com" in url.lower()
 
 
-async def resolve_klipy(url: str) -> dict | None:
-    """Resolve a Klipy media/page URL to larger direct-media variants to try.
-    Klipy's embed gives a tiny preview; the path segment after the host is a
-    size tier (e.g. 'ii'). We generate larger-tier variants of BOTH the .webp
-    and a .gif/.mp4 sibling so the caller can try to fetch a real animation."""
-    ok, _ = is_safe_url(url)
+async def resolve_klipy(page_url: str) -> dict | None:
+    """Resolve a Klipy page (e.g. https://klipy.com/gifs/girl-hair-9) to its real
+    full-size media by reading og:video / og:image from the page HTML. The embed's
+    static.klipy.com thumbnail is only an 840-byte preview stub, so we must go to
+    the page for the real animation. Returns {gif, mp4} or None."""
+    ok, _ = is_safe_url(page_url)
     if not ok:
         return None
-    variants = []
-    base = url.split("?")[0]
-    if "static.klipy.com" in base.lower():
-        # swap the tier code (first path segment after host) to bigger sizes
-        for tier in ("hd", "gif", "lg", "md", "original", "raw"):
-            variants.append(_re.sub(r"(https?://static\.klipy\.com/)[^/]+/",
-                                    rf"\1{tier}/", base, count=1))
-        # also try the same path but as .gif and .mp4 extensions
-        stem = _re.sub(r"\.(webp|gif|mp4)$", "", base, flags=_re.I)
-        for ext in (".gif", ".mp4"):
-            variants.append(stem + ext)
-            for tier in ("hd", "gif", "lg"):
-                variants.append(_re.sub(r"(https?://static\.klipy\.com/)[^/]+/",
-                                        rf"\1{tier}/", stem + ext, count=1))
-    # de-dupe, drop the original tiny url
-    seen = set()
-    out = []
-    for v in variants:
-        if v != base and v not in seen:
-            seen.add(v); out.append(v)
-    return {"variants": out}
+    # only meaningful for the human-facing page, not the static stub
+    if "static.klipy.com" in page_url.lower():
+        return None
+    gif = None
+    mp4 = None
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
+            async with s.get(page_url, headers=_UA) as r:
+                if r.status != 200:
+                    return None
+                html = await r.text()
+    except Exception:
+        return None
+
+    def _meta(*props):
+        for prop in props:
+            m = _re.search(
+                r'<meta[^>]+(?:property|name)=["\']%s["\'][^>]+content=["\']([^"\']+)["\']' % _re.escape(prop),
+                html, _re.I)
+            if not m:
+                m = _re.search(
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']%s["\']' % _re.escape(prop),
+                    html, _re.I)
+            if m:
+                return m.group(1)
+        return None
+
+    mp4 = _meta("og:video", "og:video:url", "og:video:secure_url", "twitter:player:stream")
+    img = _meta("og:image", "twitter:image")
+    if img and img.lower().split("?")[0].endswith((".gif", ".webp", ".png", ".jpg", ".jpeg")):
+        gif = img
+    # also scan for any direct media.klipy / .gif / .mp4 link in the HTML as a fallback
+    if not (gif or mp4):
+        m = _re.search(r'https?://[^\s"\']+\.(?:gif|mp4)', html, _re.I)
+        if m:
+            u = m.group(0)
+            (mp4 if u.lower().endswith(".mp4") else gif) or None
+            if u.lower().endswith(".mp4"):
+                mp4 = u
+            else:
+                gif = u
+    if not (gif or mp4):
+        return None
+    return {"gif": gif, "mp4": mp4}
 def song_key() -> str | None:
     return os.environ.get("UTIL_SONG_API_KEY") or None
 

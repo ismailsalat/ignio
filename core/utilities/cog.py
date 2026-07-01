@@ -700,33 +700,32 @@ class UtilitiesCog(commands.Cog):
             emb_url = getattr(emb, "url", None)
             if emb_url and P.is_tenor_url(emb_url):
                 await _add_tenor(emb_url)
-            # image/thumbnail may already be a direct .gif/.png on media.tenor.com
-            for obj_attr in ("image", "thumbnail"):
+            # Klipy/other providers: the embed.url is the PAGE; resolve it to the
+            # real full-size media (the static thumbnail is only an 840b stub)
+            if emb_url and P.is_klipy_url(emb_url):
+                kv = await P.resolve_klipy(emb_url)
+                if kv:
+                    if kv.get("gif"):
+                        candidates.append(kv["gif"])
+                    if kv.get("mp4"):
+                        mp4_candidates.append(kv["mp4"])
+
+            # image/thumbnail: try Discord's proxy_url FIRST (it's Discord's cached
+            # copy and often the full animation), then the raw url
+            for obj_attr in ("image", "thumbnail", "video"):
                 obj = getattr(emb, obj_attr, None)
-                u = getattr(obj, "url", None) if obj else None
-                if u:
-                    candidates.append(u)
-                    # Klipy/other CDNs give a tiny preview; expand to larger tiers
-                    if P.is_klipy_url(u):
-                        kv = await P.resolve_klipy(u)
-                        if kv:
-                            for v in kv.get("variants", []):
-                                candidates.append(v)
-                                if v.lower().split("?")[0].endswith(".mp4"):
-                                    mp4_candidates.append(v)
-            # capture the video url as an ffmpeg-convert fallback (not for PIL)
-            vid = getattr(emb, "video", None)
-            vurl = getattr(vid, "url", None) if vid else None
-            if vurl:
-                mp4_candidates.append(vurl)
-                if P.is_klipy_url(vurl):
-                    kv = await P.resolve_klipy(vurl)
-                    if kv:
-                        for v in kv.get("variants", []):
-                            if v.lower().split("?")[0].endswith(".mp4"):
-                                mp4_candidates.append(v)
-                            else:
-                                candidates.append(v)
+                if obj is None:
+                    continue
+                purl = getattr(obj, "proxy_url", None)
+                url_ = getattr(obj, "url", None)
+                is_video_field = (obj_attr == "video")
+                for cand in (purl, url_):
+                    if not cand:
+                        continue
+                    if is_video_field or cand.lower().split("?")[0].endswith((".mp4", ".mov", ".webm")):
+                        mp4_candidates.append(cand)
+                    else:
+                        candidates.append(cand)
 
         # try only URLs that look like images; keep order, de-dupe
         seen = set()
