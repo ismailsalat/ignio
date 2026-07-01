@@ -402,6 +402,46 @@ async def test_mp4_fallback_caption():
     return img is not None and anim
 
 
+
+
+def test_gif_no_blank_frames():
+    """Partial/delta GIF frames must composite (no blank/white frames below bar)."""
+    from PIL import Image, ImageDraw
+    import io as _io
+    from core.utilities.cards import caption_gif
+    frames = []
+    base = Image.new("RGBA", (200, 150), (50, 100, 180, 255))
+    ImageDraw.Draw(base).ellipse([40, 40, 120, 120], fill=(240, 200, 60, 255))
+    frames.append(base.copy())
+    for i in range(1, 4):
+        f = Image.new("RGBA", (200, 150), (0, 0, 0, 0))  # delta frame
+        ImageDraw.Draw(f).ellipse([40 + i*15, 40, 120 + i*15, 120], fill=(240, 200, 60, 255))
+        frames.append(f)
+    b = _io.BytesIO()
+    frames[0].save(b, format="GIF", save_all=True, append_images=frames[1:], duration=100, loop=0, disposal=1)
+    b.seek(0)
+    out, kept = caption_gif(Image.open(b), "test")
+    res = Image.open(_io.BytesIO(out.read()))
+    res.seek(2)  # a delta frame
+    rgb = res.convert("RGB")
+    W, H = rgb.size
+    # sample the media area below the caption bar; must not be all white
+    px = rgb.getpixel((W // 2, H - 40))
+    check("delta GIF frame is not blank/white below bar", px != (255, 255, 255) and kept)
+
+
+
+
+def test_quote_clean():
+    from core.utilities.cog import _clean_quote_text
+    check("custom emoji removed (no raw code)", _clean_quote_text("hi <:sob:123456789> yo") == "hi yo")
+    check("animated emoji removed", _clean_quote_text("a <a:d:12> b") == "a b")
+    check("mention neutralized", "<@" not in _clean_quote_text("hey <@123> x"))
+    check("everyone neutralized", "@everyone" not in _clean_quote_text("@everyone hi"))
+    check("unicode emoji kept", "😭" in _clean_quote_text("lol 😭"))
+    check("arabic kept", "حال" in _clean_quote_text("كيف حالك"))
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -413,6 +453,8 @@ def _extra_main():
     test_media_blocked()
     test_afk_text()
     test_quote_twitter()
+    test_gif_no_blank_frames()
+    test_quote_clean()
     check("caption uses only the replied message", asyncio.run(test_caption_only_replied()))
     check("tenor gifv embed resolves to .gif (never mp4)", asyncio.run(test_tenor_embed_caption()))
     check("mp4 fallback converts to gif via ffmpeg", asyncio.run(test_mp4_fallback_caption()))

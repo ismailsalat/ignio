@@ -8,12 +8,24 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.1.0"
+VERSION = "2.1.1"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Caption via source page"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.1.1",
+        "date": "2026-06-30",
+        "title": "GIF caption compositing + quote emoji cleanup",
+        "notes": [
+            "FIXED the blank/white GIF caption bug: partial/delta frames are now",
+            "  composited onto a running canvas, so the media renders correctly",
+            "  (was showing a white area under the caption bar)",
+            "!quote: strips custom Discord emoji <:name:id> cleanly (no raw code/boxes)",
+            "  and neutralizes mentions, while keeping Unicode emoji + all languages",
+        ],
+    },
     {
         "version": "2.1.0",
         "date": "2026-06-30",

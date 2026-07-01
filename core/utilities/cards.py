@@ -132,11 +132,13 @@ def quote_card(display_name: str, text: str, timestamp: str,
 
 def caption_gif(base: Image.Image, caption: str, max_bytes: int = 8 * 1024 * 1024):
     """Caption an animated GIF, preserving animation. Returns (BytesIO, is_animated).
-    Falls back to a first-frame still if the GIF is too big/slow to render safely."""
+    Falls back to a first-frame still if the GIF is too big/slow to render safely.
+
+    Correctly composites partial/delta frames (GIF disposal) onto a running
+    canvas so frames that only store changed pixels don't render as blank/white."""
     cap = (caption or "").strip()
     n_frames = getattr(base, "n_frames", 1)
-    # safety caps: don't render huge/long GIFs frame-by-frame
-    if n_frames > 120 or (base.size[0] * base.size[1]) > 1_200_000:
+    if n_frames > 150 or (base.size[0] * base.size[1]) > 1_500_000:
         base.seek(0)
         return caption_image(base.convert("RGBA"), cap), False
 
@@ -151,18 +153,29 @@ def caption_gif(base: Image.Image, caption: str, max_bytes: int = 8 * 1024 * 102
     frames = []
     durations = []
     try:
+        # running canvas that carries previous frame content (handles disposal)
+        prev = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         for i in range(n_frames):
             base.seek(i)
-            frame = base.convert("RGBA")
+            # composite this (possibly partial) frame onto the previous canvas
+            cur = base.convert("RGBA")
+            canvas = prev.copy()
+            canvas.alpha_composite(cur)
+            prev = canvas.copy()
+
+            # flatten the fully-composited frame onto white, then add caption bar
+            flat = Image.new("RGBA", (W, H), (255, 255, 255, 255))
+            flat.alpha_composite(canvas)
+
             out = Image.new("RGBA", (W, H + bar_h), (255, 255, 255, 255))
-            out.paste(frame, (0, bar_h))
+            out.paste(flat, (0, bar_h))
             d = ImageDraw.Draw(out)
             y = 14
             for ln in lines:
                 lw = _text_w(d, ln, font)
                 d.text(((W - lw) // 2, y), ln, font=font, fill=(15, 15, 18))
                 y += line_h
-            frames.append(out.convert("P", palette=Image.ADAPTIVE))
+            frames.append(out.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=256))
             durations.append(base.info.get("duration", 80))
     except Exception:
         base.seek(0)
@@ -170,9 +183,8 @@ def caption_gif(base: Image.Image, caption: str, max_bytes: int = 8 * 1024 * 102
 
     buf = io.BytesIO()
     frames[0].save(buf, format="GIF", save_all=True, append_images=frames[1:],
-                   duration=durations, loop=0, disposal=2)
+                   duration=durations, loop=0, disposal=2, optimize=False)
     if buf.tell() > max_bytes:
-        # too large animated — fall back to first-frame still
         base.seek(0)
         return caption_image(base.convert("RGBA"), cap), False
     buf.seek(0)

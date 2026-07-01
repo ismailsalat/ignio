@@ -892,7 +892,8 @@ class UtilitiesCog(commands.Cog):
         ts = t.created_at.strftime("%b %d, %Y")
         with manager.temp_files():
             handle = getattr(t.author, "name", None)
-            buf = cards.quote_card(t.author.display_name, t.content, ts, avatar, handle=handle)
+            clean = _clean_quote_text(t.content)
+            buf = cards.quote_card(t.author.display_name, clean, ts, avatar, handle=handle)
             await ctx.reply(file=discord.File(buf, filename="quote.png"), allowed_mentions=NONE)
 
     # ------------------------------------------------------------------ #
@@ -1105,6 +1106,18 @@ def _ago(secs: int) -> str:
         return f"{h} hour{'s' if h != 1 else ''} ago"
     d = secs // 86400
     return f"{d} day{'s' if d != 1 else ''} ago"
+
+
+def _clean_quote_text(text: str) -> str:
+    """Remove custom Discord emoji (<:name:id>) and neutralize pings for the
+    rendered quote card. Keeps normal Unicode emoji and all languages."""
+    import re as _re
+    t = text or ""
+    t = _re.sub(r"<a?:\w+:\d+>", "", t)          # drop custom/animated emoji
+    t = _re.sub(r"<@[!&]?\d+>", "", t)           # drop user/role mentions
+    t = t.replace("@everyone", "everyone").replace("@here", "here")
+    t = _re.sub(r"[ \t]{2,}", " ", t).strip()    # collapse leftover whitespace
+    return t
 
 
 def _media_error(code: str) -> str:
