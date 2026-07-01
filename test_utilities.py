@@ -331,6 +331,39 @@ async def test_caption_only_replied():
     return ok_found and ok_none
 
 
+
+
+async def test_tenor_embed_caption():
+    """A Tenor gifv embed resolves to the direct .gif; the .mp4 is never opened."""
+    from unittest.mock import patch
+    from core.utilities.cog import UtilitiesCog
+    import discord
+    from discord.ext import commands
+    class Obj:
+        def __init__(self, url): self.url = url
+    class FakeEmbed:
+        url = "https://tenor.com/view/holaa-gif-7220205024135693548"
+        image = None
+        thumbnail = Obj("https://media.tenor.com/abc/tenor.png")
+        video = Obj("https://media.tenor.com/abc/tenor.mp4")
+    class FakeMsg:
+        attachments = []; embeds = [FakeEmbed()]; content = ""
+    bot = commands.Bot(command_prefix="!!", intents=discord.Intents.all())
+    cog = UtilitiesCog(bot, None, None)
+    tried = []
+    async def fake_dl(url):
+        tried.append(url)
+        if url.endswith("tenor.gif"):
+            from PIL import Image; import io as _io
+            f = [Image.new("RGB", (40, 40), (200, 80, 90)) for _ in range(2)]
+            b = _io.BytesIO(); f[0].save(b, format="GIF", save_all=True, append_images=f[1:], duration=80)
+            return b.getvalue()
+        return None
+    with patch.object(cog, "_download_image_bytes", side_effect=fake_dl):
+        img, anim = await cog._image_from_message(FakeMsg())
+    return img is not None and not any(".mp4" in u for u in tried)
+
+
 def _extra_main():
     test_xray_logic()
     test_translate_parsing()
@@ -343,6 +376,7 @@ def _extra_main():
     test_afk_text()
     test_quote_twitter()
     check("caption uses only the replied message", asyncio.run(test_caption_only_replied()))
+    check("tenor gifv embed resolves to .gif (never mp4)", asyncio.run(test_tenor_embed_caption()))
 
 
 if __name__ == "__main__":

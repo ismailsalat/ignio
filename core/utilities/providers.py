@@ -422,39 +422,51 @@ def is_tenor_url(url: str) -> bool:
 
 
 async def resolve_tenor(url: str) -> dict | None:
-    """Fetch a Tenor view page and pull the direct media URL from its meta tags.
-    Returns {gif, mp4} (either may be None) or None on failure. No API key."""
+    """Resolve a Tenor view page to direct media URLs.
+    Returns {gif, gif_direct, mp4} (any may be None). No API key needed.
+
+    Strategy: read the page's og:image/og:video meta tags AND construct the
+    canonical media URL from the numeric id as a reliable fallback."""
     ok, _ = is_safe_url(url)
     if not ok:
         return None
+
+    # extract the numeric tenor id from the /view/ slug
+    gif_direct = None
+    m = _re.search(r"-(\d+)/?$", url.split("?")[0].rstrip("/"))
+    if m:
+        # canonical direct-gif endpoint that redirects to media.tenor.com/.../tenor.gif
+        gif_direct = f"https://c.tenor.com/{m.group(1)}/tenor.gif"
+
+    gif = None
+    mp4 = None
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.get(url, headers=_UA) as r:
-                if r.status != 200:
-                    return None
-                html = await r.text()
+                if r.status == 200:
+                    html = await r.text()
+
+                    def _meta(prop):
+                        mm = _re.search(
+                            r'<meta[^>]+(?:property|name)=["\']%s["\'][^>]+content=["\']([^"\']+)["\']' % _re.escape(prop),
+                            html, _re.I)
+                        if not mm:
+                            mm = _re.search(
+                                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']%s["\']' % _re.escape(prop),
+                                html, _re.I)
+                        return mm.group(1) if mm else None
+
+                    og_image = _meta("og:image")
+                    # only accept og:image if it's actually a gif/png/jpg
+                    if og_image and og_image.lower().split("?")[0].endswith((".gif", ".png", ".jpg", ".jpeg", ".webp")):
+                        gif = og_image
+                    mp4 = _meta("og:video") or _meta("og:video:secure_url")
     except Exception:
-        return None
-
-    def _meta(prop):
-        m = _re.search(
-            r'<meta[^>]+(?:property|name)=["\']%s["\'][^>]+content=["\']([^"\']+)["\']' % _re.escape(prop),
-            html, _re.I)
-        if not m:
-            m = _re.search(
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']%s["\']' % _re.escape(prop),
-                html, _re.I)
-        return m.group(1) if m else None
-
-    gif = _meta("og:image")
-    mp4 = _meta("og:video") or _meta("og:video:secure_url")
-    # tenor og:image is usually the direct .gif on media.tenor.com
-    if gif and not gif.lower().endswith((".gif", ".png", ".jpg", ".jpeg", ".webp")):
-        # sometimes og:image is a preview; still usable as a still frame
         pass
-    if not gif and not mp4:
+
+    if not (gif or gif_direct or mp4):
         return None
-    return {"gif": gif, "mp4": mp4}
+    return {"gif": gif, "gif_direct": gif_direct, "mp4": mp4}
 def song_key() -> str | None:
     return os.environ.get("UTIL_SONG_API_KEY") or None
 

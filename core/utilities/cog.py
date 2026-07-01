@@ -644,55 +644,81 @@ class UtilitiesCog(commands.Cog):
                     print(f"[Ignio][Caption] attachment read failed: {type(ex).__name__}: {ex}")
                     continue
 
-        # 2) candidate URLs from text + embeds (Tenor resolved to direct GIF)
+        # 2) candidate URLs (Tenor resolved to a real .gif; only image URLs kept)
         candidates: list[str] = []
+
+        async def _add_tenor(page_url):
+            tn = await P.resolve_tenor(page_url)
+            if tn:
+                # prefer an actual animated gif; skip mp4 (PIL can't open video)
+                if tn.get("gif"):
+                    candidates.append(tn["gif"])
+                if tn.get("gif_direct"):
+                    candidates.append(tn["gif_direct"])
+
+        # text links
         for u in resolver.extract_urls(getattr(t, "content", "") or ""):
             if P.is_tenor_url(u):
-                tn = await P.resolve_tenor(u)
-                if tn and (tn.get("gif") or tn.get("mp4")):
-                    candidates.append(tn.get("gif") or tn.get("mp4"))
+                await _add_tenor(u)
             else:
                 base = u.lower().split("?")[0]
                 if base.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
                     candidates.append(u)
 
+        # embeds (GIF-picker sends a gifv embed)
         for emb in getattr(t, "embeds", []):
             emb_url = getattr(emb, "url", None)
             if emb_url and P.is_tenor_url(emb_url):
-                tn = await P.resolve_tenor(emb_url)
-                if tn and (tn.get("gif") or tn.get("mp4")):
-                    candidates.append(tn.get("gif") or tn.get("mp4"))
-            for obj_attr in ("image", "thumbnail", "video"):
+                await _add_tenor(emb_url)
+            # image/thumbnail may already be a direct .gif/.png on media.tenor.com
+            for obj_attr in ("image", "thumbnail"):
                 obj = getattr(emb, obj_attr, None)
                 u = getattr(obj, "url", None) if obj else None
                 if u:
                     candidates.append(u)
+            # NOTE: we intentionally do NOT add embed.video.url — it's an .mp4
+            # that PIL cannot open. Tenor .gif is handled via the resolver above.
 
+        # try only URLs that look like images; keep order, de-dupe
+        seen = set()
         for url in candidates:
+            if url in seen:
+                continue
+            seen.add(url)
             data = await self._download_image_bytes(url)
             if not data:
                 continue
+            # verify it's a real image PIL can open (skip mp4/webp-anim edge cases cleanly)
             try:
-                im = Image.open(io.BytesIO(data))
-                im.load()
+                probe = Image.open(io.BytesIO(data))
+                probe.load()
                 im2 = Image.open(io.BytesIO(data))
-                return im2, getattr(im, "is_animated", False)
+                print(f"[Ignio][Caption] using image candidate ({probe.format})")
+                return im2, getattr(probe, "is_animated", False)
             except Exception as ex:
-                print(f"[Ignio][Caption] candidate decode failed: {type(ex).__name__}")
+                print(f"[Ignio][Caption] candidate not a still/gif ({type(ex).__name__}), trying next")
                 continue
         return None, False
 
     async def _download_image_bytes(self, url: str) -> bytes | None:
-        """Safely download an image URL (size-capped, SSRF-guarded)."""
+        """Safely download an image URL (size-capped, SSRF-guarded, follows
+        redirects e.g. c.tenor.com -> media.tenor.com)."""
         ok, _ = safety.is_safe_url(url)
         if not ok:
             return None
         try:
             import aiohttp
+            ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12)) as s:
-                async with s.get(url, headers={"User-Agent": "IgnioBot/1.0"}) as r:
+                async with s.get(url, headers={"User-Agent": ua}, allow_redirects=True) as r:
                     if r.status != 200:
-                        print(f"[Ignio][Caption] image URL returned {r.status}")
+                        print(f"[Ignio][Caption] image URL returned {r.status} for {url.split('?')[0]}")
+                        return None
+                    # re-validate the final URL after redirects (SSRF)
+                    final = str(r.url)
+                    fok, _ = safety.is_safe_url(final)
+                    if not fok:
                         return None
                     data = await r.content.read(12 * 1024 * 1024 + 1)
                     if len(data) > 12 * 1024 * 1024:
