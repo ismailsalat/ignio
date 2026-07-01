@@ -8,12 +8,24 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "1.9.6"
+VERSION = "1.9.7"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Utilities Polish"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "1.9.7",
+        "date": "2026-06-30",
+        "title": "Caption webp/mp4 + host diagnostics",
+        "notes": [
+            "!caption: animated webp (Klipy/Tenor) that Pillow cannot decode is now",
+            "  routed through the ffmpeg mp4->gif fallback as well",
+            "Boot log prints host caps: ffmpeg / pillow_webp / yt_dlp so missing tools",
+            "  are obvious (a missing ffmpeg is the usual caption+download blocker)",
+            "Clear logs when ffmpeg is absent or a conversion produces no output",
+        ],
+    },
     {
         "version": "1.9.6",
         "date": "2026-06-30",

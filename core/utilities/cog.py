@@ -45,6 +45,14 @@ class UtilitiesCog(commands.Cog):
         self.settings = settings
         self.repo = sob_repo
         self._afk_notice: dict[tuple[int, int, int], float] = {}  # (g,ch,target)->ts
+        # log host capabilities so caption/media issues are obvious at boot
+        try:
+            from PIL import features as _pf
+            webp = _pf.check("webp")
+        except Exception:
+            webp = False
+        print(f"[Ignio][Utilities] host caps: ffmpeg={media.ffmpeg_available()} "
+              f"pillow_webp={webp} yt_dlp={media.is_available()}")
 
     async def _enabled(self, gid: int) -> bool:
         if self.repo is None:
@@ -687,6 +695,7 @@ class UtilitiesCog(commands.Cog):
 
         # try only URLs that look like images; keep order, de-dupe
         seen = set()
+        convert_urls = []          # image urls PIL couldn't open -> try ffmpeg
         for url in candidates:
             if url in seen:
                 continue
@@ -695,7 +704,6 @@ class UtilitiesCog(commands.Cog):
             data = await self._download_image_bytes(url)
             if not data:
                 continue
-            # verify it's a real image PIL can open (skip mp4/webp-anim edge cases cleanly)
             try:
                 probe = Image.open(io.BytesIO(data))
                 probe.load()
@@ -704,14 +712,16 @@ class UtilitiesCog(commands.Cog):
                 return im2, getattr(probe, "is_animated", False)
             except Exception as ex:
                 print(f"[Ignio][Caption] candidate not a still/gif ({type(ex).__name__}: "
-                      f"{str(ex)[:80]}), first bytes={data[:8]!r}, trying next")
+                      f"{str(ex)[:60]}), first bytes={data[:8]!r}, will try ffmpeg")
+                convert_urls.append(url)   # e.g. animated webp PIL can't decode
                 continue
 
-        # last resort: if there's a video (Tenor .mp4 / gifv), convert it to a GIF
-        # with ffmpeg so we can still caption it. Tenor always provides an mp4.
-        for mp4 in mp4_candidates:
-            print(f"[Ignio][Caption] converting video to gif: {mp4.split('?')[0]}")
-            gif_bytes = await media.video_url_to_gif_bytes(mp4)
+        # fallback: convert any video/webp to a GIF with ffmpeg (ffmpeg reads
+        # webp AND mp4). This covers hosts whose Pillow lacks libwebp, and any
+        # animated format PIL can't open.
+        for vurl in convert_urls + mp4_candidates:
+            print(f"[Ignio][Caption] converting to gif via ffmpeg: {vurl.split('?')[0]}")
+            gif_bytes = await media.video_url_to_gif_bytes(vurl)
             if gif_bytes:
                 try:
                     probe = Image.open(io.BytesIO(gif_bytes))
