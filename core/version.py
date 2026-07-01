@@ -8,12 +8,23 @@ Used by !version (simple) and !about (full).
 """
 from __future__ import annotations
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 RELEASED = "2026-06-29"        # date of this version (YYYY-MM-DD)
 CODENAME = "Caption via source page"
 
 # Newest first. Keep each entry short. 'notes' is a list of bullet lines.
 CHANGELOG = [
+    {
+        "version": "2.1.0",
+        "date": "2026-06-30",
+        "title": "Games & Utilities overview pages",
+        "notes": [
+            "NEW !games — clean list of all game commands + live aliases",
+            "NEW !utilities — clean list of all utility commands + live aliases + media",
+            "Both auto-pull names/aliases from the command registry so they never go stale",
+            "Caption: Klipy GIFs give a clear 'use Tenor or upload directly' message (v2.0.1)",
+        ],
+    },
     {
         "version": "2.0.1",
         "date": "2026-06-30",

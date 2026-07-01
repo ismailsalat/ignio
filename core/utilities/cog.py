@@ -433,6 +433,53 @@ class UtilitiesCog(commands.Cog):
             await working.edit(embed=_compact("Map", body))
 
     # ------------------------------------------------------------------ #
+    # !games  /  !utilities  — clean command overview pages
+    # ------------------------------------------------------------------ #
+    def _cmd_line(self, name: str, desc: str) -> str:
+        """Render one command line with its live aliases from the registry."""
+        c = self.bot.get_command(name)
+        p = "!!"
+        line = f"`{p}{name}` — {desc}"
+        if c and c.aliases:
+            line += f"\nAliases: " + ", ".join(f"`{p}{a}`" for a in c.aliases)
+        return line
+
+    @commands.command(name="games", aliases=["gamelist"])
+    @commands.guild_only()
+    async def games(self, ctx: commands.Context):
+        specs = [
+            ("mapgame", "Guess the country from a map."),
+            ("mapflag", "Guess the country from its flag."),
+            ("flag", "Vote red flag / green flag on a scenario."),
+            ("sobship", "Ship two people with a love-meter."),
+        ]
+        lines = [self._cmd_line(n, d) for n, d in specs if self.bot.get_command(n)]
+        e = _compact("🎮 Games", "\n\n".join(lines))
+        await ctx.reply(embed=e, allowed_mentions=NONE)
+
+    @commands.command(name="utilities", aliases=["utils", "utilcmds"])
+    @commands.guild_only()
+    async def utilities(self, ctx: commands.Context):
+        specs = [
+            ("caption", "Add a caption bar to a replied image or GIF."),
+            ("quote", "Turn a replied message into a quote card."),
+            ("map", "Show a map of any place."),
+            ("weather", "Current weather for a place."),
+            ("translate", "Translate a message (defaults to English)."),
+            ("tldr", "Summarize a link, video, or long message."),
+            ("catchup", "Catch up on recent channel chat."),
+            ("xray", "Follow a link's redirects and show its destination."),
+            ("song", "Identify the song in a video/audio clip."),
+            ("afk", "Set an away message."),
+        ]
+        lines = [self._cmd_line(n, d) for n, d in specs if self.bot.get_command(n)]
+        e = _compact("🧰 Utilities", "\n\n".join(lines))
+        e.add_field(name="📥 Media download",
+                    value="**@Ignio** `<video link>` — download a public video.",
+                    inline=False)
+        await ctx.reply(embed=e, allowed_mentions=NONE)
+
+    # ------------------------------------------------------------------ #
     # !weather
     # ------------------------------------------------------------------ #
     @commands.command(name="weather", aliases=["w"])
