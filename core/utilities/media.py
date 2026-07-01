@@ -231,32 +231,55 @@ async def video_url_to_gif_bytes(url: str, max_seconds: int = 8) -> bytes | None
         import aiohttp
         ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+        headers = {"User-Agent": ua, "Referer": "https://discord.com/",
+                   "Accept": "*/*"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
-            async with s.get(url, headers={"User-Agent": ua}) as r:
+            async with s.get(url, headers=headers) as r:
                 if r.status != 200:
                     print(f"[Ignio][Caption] video download returned {r.status}")
                     return None
-                data = await r.content.read(20 * 1024 * 1024 + 1)
-                if not data or len(data) > 20 * 1024 * 1024:
-                    print("[Ignio][Caption] video empty or too large")
-                    return None
+                data = await r.content.read(25 * 1024 * 1024 + 1)
+                ctype = r.headers.get("Content-Type", "?")
+        if not data:
+            print("[Ignio][Caption] video download was empty")
+            return None
+        if len(data) > 25 * 1024 * 1024:
+            print("[Ignio][Caption] source too large")
+            return None
+        # guard: if we got an HTML error page instead of media, bail with a note
+        if data[:15].lstrip()[:1] == b"<" or b"<html" in data[:200].lower():
+            print("[Ignio][Caption] source returned an HTML page, not media (blocked?)")
+            return None
+        print(f"[Ignio][Caption] downloaded {len(data)} bytes (type={ctype}); converting…")
         with open(src, "wb") as f:
             f.write(data)
-        vf = "fps=12,scale=400:-1:flags=lanczos"
-        proc = await _asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-t", str(max_seconds), "-i", src,
-            "-vf", vf, "-loop", "0", dst,
-            stdout=_asyncio.subprocess.DEVNULL, stderr=_asyncio.subprocess.DEVNULL)
-        try:
-            await _asyncio.wait_for(proc.communicate(), timeout=25)
-        except _asyncio.TimeoutError:
-            proc.kill()
-            print("[Ignio][Caption] ffmpeg conversion timed out")
-            return None
+
+        # ffmpeg: input -> gif. -2 keeps dimensions even; no audio. Capture stderr.
+        async def _run(args):
+            proc = await _asyncio.create_subprocess_exec(
+                "ffmpeg", *args,
+                stdout=_asyncio.subprocess.DEVNULL, stderr=_asyncio.subprocess.PIPE)
+            try:
+                _, se = await _asyncio.wait_for(proc.communicate(), timeout=25)
+                return proc.returncode, (se or b"").decode("utf-8", "replace")
+            except _asyncio.TimeoutError:
+                proc.kill()
+                return -1, "timeout"
+
+        rc, err = await _run(["-y", "-t", str(max_seconds), "-i", src, "-an",
+                              "-vf", "fps=12,scale=400:-2:flags=lanczos",
+                              "-loop", "0", dst])
+        if not (os.path.exists(dst) and os.path.getsize(dst) > 0):
+            # retry with no scaling (some odd inputs choke on the filter)
+            print(f"[Ignio][Caption] first ffmpeg pass failed (rc={rc}); retrying simpler")
+            rc, err = await _run(["-y", "-t", str(max_seconds), "-i", src, "-an",
+                                  "-vf", "fps=10", "-loop", "0", dst])
+
         if os.path.exists(dst) and os.path.getsize(dst) > 0:
             with open(dst, "rb") as f:
                 return f.read()
-        print("[Ignio][Caption] ffmpeg produced no output")
+        tail = " | ".join(err.strip().splitlines()[-3:]) if err else "(no stderr)"
+        print(f"[Ignio][Caption] ffmpeg produced no output. ffmpeg says: {tail}")
         return None
     except Exception as ex:
         print(f"[Ignio][Caption] video->gif failed: {type(ex).__name__}: {ex}")
